@@ -5,25 +5,10 @@ output "client_public_ips" {
   }
 }
 
-output "client_iam_access_keys" {
-  description = "IAM access key IDs for Bedrock, keyed by client slug (non-sensitive)."
-  value = {
-    for slug, mod in module.client : slug => mod.iam_access_key_id
-  }
-}
-
-output "client_iam_secret_keys" {
-  description = "IAM secret access keys for Bedrock, keyed by client slug. Use terraform output -json to retrieve."
+output "client_gateway_tokens" {
+  description = "OpenClaw gateway tokens, keyed by client slug. Sensitive — use tofu output -json to retrieve."
   sensitive   = true
   value = {
-    for slug, mod in module.client : slug => mod.iam_secret_access_key
+    for slug, mod in module.client : slug => mod.gateway_token
   }
-}
-
-output "ansible_inventory_snippet" {
-  description = "Paste into ansible/inventory/hosts.yml under clawless_nodes.hosts after provisioning."
-  value = join("\n", [
-    for slug, mod in module.client :
-    "        ${slug}:\n          ansible_host: ${mod.instance_public_ip}"
-  ])
 }
