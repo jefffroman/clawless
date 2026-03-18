@@ -39,6 +39,12 @@ variable "openclaw_workspace_dir" {
   type        = string
 }
 
+variable "active" {
+  description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Tags to merge onto all resources alongside the per-client Client tag."
   type        = map(string)

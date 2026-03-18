@@ -30,6 +30,7 @@ variable "clients" {
   EOT
   type = map(object({
     display_name = string
+    active       = optional(bool, true)
   }))
   sensitive = false
   default   = {}

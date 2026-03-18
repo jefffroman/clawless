@@ -3,11 +3,6 @@
 # Installs a systemd timer that syncs the OpenClaw workspace to S3 hourly.
 # AWS credentials come from SSM (no keys needed here).
 
-- name: Install AWS CLI
-  ansible.builtin.apt:
-    name: awscli
-    state: present
-
 - name: Deploy workspace backup script
   ansible.builtin.copy:
     dest: /usr/local/bin/clawless-backup

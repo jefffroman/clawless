@@ -21,6 +21,7 @@ module "client" {
 
   client_slug            = each.key
   display_name           = each.value.display_name
+  active                 = each.value.active
   availability_zone      = var.lightsail_availability_zone
   bundle_id              = var.lightsail_bundle_id
   blueprint_id           = var.lightsail_blueprint_id
@@ -34,7 +35,7 @@ module "client" {
 # The gateway token is generated on the remote instance by Ansible and never
 # leaves it — it is not passed here, not stored in state, not written locally.
 resource "null_resource" "provision" {
-  for_each = var.clients
+  for_each = { for k, v in var.clients : k => v if v.active }
 
   triggers = {
     instance_name = module.client[each.key].instance_name

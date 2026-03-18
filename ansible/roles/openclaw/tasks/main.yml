@@ -1,5 +1,24 @@
 ---
 
+# Restore workspace from S3 before starting OpenClaw. On a fresh instance
+# (first provision) the bucket will be empty and this is a no-op. On resume
+# after a pause the bucket contains the previous workspace, so this restores
+# full agent history and memory before the service starts.
+- name: Check for existing workspace data in S3
+  ansible.builtin.command:
+    cmd: aws s3 ls s3://{{ openclaw_backup_bucket }}/workspace/
+  register: s3_workspace_check
+  changed_when: false
+  failed_when: false
+
+- name: Restore workspace from S3 (resume path)
+  ansible.builtin.command:
+    cmd: >
+      aws s3 sync
+      s3://{{ openclaw_backup_bucket }}/workspace/
+      {{ openclaw_workspace_dir }}/
+  when: s3_workspace_check.rc == 0 and s3_workspace_check.stdout != ""
+
 - name: Ensure OpenClaw config directory exists
   ansible.builtin.file:
     path: "{{ openclaw_config_dir }}"

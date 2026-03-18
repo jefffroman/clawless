@@ -17,6 +17,7 @@
 - name: Install essential packages
   ansible.builtin.apt:
     name:
+      - awscli
       - curl
       - ca-certificates
       - gnupg

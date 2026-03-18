@@ -11,6 +11,7 @@ locals {
   name_prefix = "clawless-${var.client_slug}"
   tags = merge(var.tags, {
     Client = var.client_slug
+    Active = tostring(var.active)
   })
 }
 
@@ -22,6 +23,10 @@ data "aws_caller_identity" "current" {}
 resource "aws_s3_bucket" "workspace_backup" {
   bucket = "${local.name_prefix}-backup-${data.aws_caller_identity.current.account_id}"
   tags   = local.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_versioning" "workspace_backup" {
@@ -55,6 +60,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup" {
     id     = "expire-old-versions"
     status = "Enabled"
 
+    filter {}
+
     noncurrent_version_expiration {
       noncurrent_days = 7
     }
@@ -73,6 +80,10 @@ resource "aws_s3_bucket" "workspace_backup_replica" {
   provider = aws.backup
   bucket   = "${local.name_prefix}-backup-replica-${data.aws_caller_identity.current.account_id}"
   tags     = local.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_versioning" "workspace_backup_replica" {
@@ -109,6 +120,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup_replica" {
   rule {
     id     = "expire-old-versions"
     status = "Enabled"
+
+    filter {}
 
     noncurrent_version_expiration {
       noncurrent_days = 7
@@ -253,6 +266,8 @@ resource "aws_iam_role_policy" "s3_backup" {
 # ── SSM Activation ────────────────────────────────────────────────────────────
 
 resource "aws_ssm_activation" "this" {
+  count = var.active ? 1 : 0
+
   name               = local.name_prefix
   iam_role           = aws_iam_role.ssm.name
   registration_limit = 1
@@ -267,6 +282,8 @@ resource "aws_ssm_activation" "this" {
 # ── Lightsail Instance ────────────────────────────────────────────────────────
 
 resource "aws_lightsail_instance" "this" {
+  count = var.active ? 1 : 0
+
   name              = local.name_prefix
   availability_zone = var.availability_zone
   blueprint_id      = var.blueprint_id
@@ -277,8 +294,8 @@ resource "aws_lightsail_instance" "this" {
     #!/bin/bash
     set -euo pipefail
     amazon-ssm-agent -register -y \
-      -id "${aws_ssm_activation.this.id}" \
-      -code "${aws_ssm_activation.this.activation_code}" \
+      -id "${aws_ssm_activation.this[0].id}" \
+      -code "${aws_ssm_activation.this[0].activation_code}" \
       -region "${data.aws_region.current.name}"
     systemctl restart amazon-ssm-agent
   EOT
@@ -293,7 +310,9 @@ resource "aws_lightsail_instance" "this" {
 # for the 443 rule at that point.
 
 resource "aws_lightsail_instance_public_ports" "this" {
-  instance_name = aws_lightsail_instance.this.name
+  count = var.active ? 1 : 0
+
+  instance_name = aws_lightsail_instance.this[0].name
 
   port_info {
     protocol  = "tcp"
