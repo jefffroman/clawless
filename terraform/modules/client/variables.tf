@@ -24,6 +24,11 @@ variable "blueprint_id" {
   type        = string
 }
 
+variable "provisioner_cidr" {
+  description = "CIDR of the machine running tofu apply. Setup ports (22, 80, 443) are restricted to this IP."
+  type        = string
+}
+
 variable "openclaw_workspace_dir" {
   description = "Path on the instance containing OpenClaw's agent workspace."
   type        = string

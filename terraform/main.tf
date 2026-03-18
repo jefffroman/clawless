@@ -1,3 +1,15 @@
+# Auto-detect the public IP of the machine running tofu apply.
+# Used to restrict setup ports (22, 80, 443) to the provisioner only.
+# NOTE: port 443 may need opening to 0.0.0.0/0 if webhook-based channel
+# integrations are used (Telegram/WhatsApp/Slack webhooks require inbound 443).
+data "http" "provisioner_ip" {
+  url = "https://checkip.amazonaws.com"
+}
+
+locals {
+  provisioner_cidr = "${chomp(data.http.provisioner_ip.response_body)}/32"
+}
+
 module "client" {
   source   = "./modules/client"
   for_each = var.clients
@@ -13,6 +25,7 @@ module "client" {
   bundle_id              = var.lightsail_bundle_id
   blueprint_id           = var.lightsail_blueprint_id
   openclaw_workspace_dir = var.openclaw_workspace_dir
+  provisioner_cidr       = local.provisioner_cidr
   tags                   = var.tags
 }
 

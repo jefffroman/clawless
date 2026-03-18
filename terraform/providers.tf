@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.0"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.0"
+    }
   }
 }
 

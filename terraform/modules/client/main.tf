@@ -48,6 +48,25 @@ resource "aws_s3_bucket_public_access_block" "workspace_backup" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup" {
+  bucket = aws_s3_bucket.workspace_backup.id
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.workspace_backup]
+}
+
 # ── S3 Replica Bucket (backup region) ────────────────────────────────────────
 
 resource "aws_s3_bucket" "workspace_backup_replica" {
@@ -81,6 +100,26 @@ resource "aws_s3_bucket_public_access_block" "workspace_backup_replica" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup_replica" {
+  provider = aws.backup
+  bucket   = aws_s3_bucket.workspace_backup_replica.id
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.workspace_backup_replica]
 }
 
 # ── CRR Replication Role ──────────────────────────────────────────────────────
@@ -247,6 +286,10 @@ resource "aws_lightsail_instance" "this" {
 }
 
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
+# All setup ports restricted to the provisioner's IP.
+# NOTE: if webhook-based channel integrations are used, port 443 will need
+# to be opened to 0.0.0.0/0 — update provisioner_cidr to ["0.0.0.0/0"]
+# for the 443 rule at that point.
 
 resource "aws_lightsail_instance_public_ports" "this" {
   instance_name = aws_lightsail_instance.this.name
@@ -255,20 +298,20 @@ resource "aws_lightsail_instance_public_ports" "this" {
     protocol  = "tcp"
     from_port = 22
     to_port   = 22
-    cidrs     = ["0.0.0.0/0"]
+    cidrs     = [var.provisioner_cidr]
   }
 
   port_info {
     protocol  = "tcp"
     from_port = 80
     to_port   = 80
-    cidrs     = ["0.0.0.0/0"]
+    cidrs     = [var.provisioner_cidr]
   }
 
   port_info {
     protocol  = "tcp"
     from_port = 443
     to_port   = 443
-    cidrs     = ["0.0.0.0/0"]
+    cidrs     = [var.provisioner_cidr]
   }
 }
