@@ -7,15 +7,6 @@ locals {
 
 data "aws_region" "current" {}
 
-# ── Gateway token ─────────────────────────────────────────────────────────────
-# Generated once, persisted in Terraform state. Passed to Ansible via the
-# null_resource local-exec in the root module; injected into OpenClaw's env file.
-
-resource "random_password" "gateway_token" {
-  length  = 43 # ~256 bits of entropy in URL-safe base64
-  special = false
-}
-
 # ── IAM Role (SSM trust) ──────────────────────────────────────────────────────
 # Lightsail has no native instance profile support, so we use SSM Hybrid
 # Activation. The instance registers with SSM on first boot via user_data;

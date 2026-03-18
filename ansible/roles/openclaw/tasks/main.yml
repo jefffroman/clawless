@@ -8,7 +8,7 @@
     group: "{{ openclaw_user }}"
     mode: "0750"
 
-- name: Deploy OpenClaw environment file (gateway token + AWS credentials)
+- name: Deploy OpenClaw environment file (AWS region)
   ansible.builtin.template:
     src: openclaw.env.j2
     dest: "{{ openclaw_env_file }}"
@@ -16,7 +16,26 @@
     group: "{{ openclaw_user }}"
     mode: "0600"
   notify: Restart openclaw
+
+# The gateway token is generated on the remote host and written directly to
+# the env file. It is never read back to the control node (no_log + write-only).
+# Idempotent: the lineinfile check preserves an existing token across re-runs.
+- name: Check if gateway token is already set
+  ansible.builtin.shell:
+    cmd: grep -q "^OPENCLAW_GATEWAY_TOKEN=" {{ openclaw_env_file }}
+  register: token_check
+  failed_when: false
+  changed_when: false
   no_log: true
+
+- name: Generate and write gateway token (first run only)
+  ansible.builtin.shell:
+    cmd: |
+      printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$(openssl rand -hex 32)" \
+        >> {{ openclaw_env_file }}
+  when: token_check.rc != 0
+  no_log: true
+  notify: Restart openclaw
 
 - name: Deploy OpenClaw YAML config (bind address, model, region)
   ansible.builtin.template:
