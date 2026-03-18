@@ -24,6 +24,7 @@ module "client" {
   availability_zone      = var.lightsail_availability_zone
   bundle_id              = var.lightsail_bundle_id
   blueprint_id           = var.lightsail_blueprint_id
+  key_pair_name          = aws_lightsail_key_pair.ansible.name
   openclaw_workspace_dir = var.openclaw_workspace_dir
   provisioner_cidr       = local.provisioner_cidr
   tags                   = var.tags

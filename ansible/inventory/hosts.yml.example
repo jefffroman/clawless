@@ -16,7 +16,7 @@ all:
     clawless_nodes:
       vars:
         ansible_user: ubuntu
-        ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        ansible_ssh_private_key_file: ~/.ssh/clawless_ansible
         openclaw_bedrock_region: us-east-1
       hosts:
         acme:

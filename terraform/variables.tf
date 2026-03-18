@@ -35,6 +35,12 @@ variable "clients" {
   default   = {}
 }
 
+variable "provisioner_public_key_path" {
+  description = "Path to the public key used by Ansible for SSH provisioning."
+  type        = string
+  default     = "~/.ssh/clawless_ansible.pub"
+}
+
 variable "backup_region" {
   description = "Secondary AWS region for S3 cross-region replication. Should be geographically distant from aws_region."
   type        = string

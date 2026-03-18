@@ -24,6 +24,11 @@ variable "blueprint_id" {
   type        = string
 }
 
+variable "key_pair_name" {
+  description = "Lightsail key pair name for Ansible SSH access."
+  type        = string
+}
+
 variable "provisioner_cidr" {
   description = "CIDR of the machine running tofu apply. Setup ports (22, 80, 443) are restricted to this IP."
   type        = string
