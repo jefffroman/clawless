@@ -1,5 +1,15 @@
 ---
 
+- name: Discover OpenClaw workspace directory
+  ansible.builtin.command:
+    cmd: openclaw config get agents.defaults.workspace
+  register: workspace_dir_result
+  changed_when: false
+
+- name: Set workspace directory fact
+  ansible.builtin.set_fact:
+    openclaw_workspace_dir: "{{ workspace_dir_result.stdout | trim }}"
+
 # Restore workspace from S3 before starting OpenClaw. On a fresh instance
 # (first provision) the bucket will be empty and this is a no-op. On resume
 # after a pause the bucket contains the previous workspace, so this restores

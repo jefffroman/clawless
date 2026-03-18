@@ -26,7 +26,6 @@ module "client" {
   bundle_id              = var.lightsail_bundle_id
   blueprint_id           = var.lightsail_blueprint_id
   key_pair_name          = aws_lightsail_key_pair.ansible.name
-  openclaw_workspace_dir = var.openclaw_workspace_dir
   provisioner_cidr       = local.provisioner_cidr
   tags                   = var.tags
 }
@@ -49,7 +48,6 @@ resource "null_resource" "provision" {
         -e "client_slug=${each.key}" \
         -e "openclaw_bedrock_region=${var.aws_region}" \
         -e "openclaw_backup_bucket=${module.client[each.key].backup_bucket_name}" \
-        -e "openclaw_workspace_dir=${var.openclaw_workspace_dir}" \
         playbooks/provision.yml
     EOT
   }

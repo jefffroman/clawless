@@ -48,12 +48,6 @@ variable "backup_region" {
   default     = "us-west-2"
 }
 
-variable "openclaw_workspace_dir" {
-  description = "Path on the Lightsail instance containing OpenClaw's agent workspace (conversation history, memory, files). Verify on a real instance — exact path depends on the blueprint version."
-  type        = string
-  default     = "/var/lib/openclaw/workspace"
-}
-
 variable "alert_email" {
   description = "Email address for operator alerts (Bedrock budget, backup failures). Requires manual confirmation of the SNS subscription after first apply."
   type        = string

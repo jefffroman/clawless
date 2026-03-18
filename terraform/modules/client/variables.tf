@@ -34,11 +34,6 @@ variable "provisioner_cidr" {
   type        = string
 }
 
-variable "openclaw_workspace_dir" {
-  description = "Path on the instance containing OpenClaw's agent workspace."
-  type        = string
-}
-
 variable "active" {
   description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
   type        = bool
