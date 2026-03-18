@@ -16,5 +16,5 @@ data "aws_ssm_parameter" "clients" {
 }
 
 locals {
-  clients = jsondecode(data.aws_ssm_parameter.clients.value)
+  clients = jsondecode(nonsensitive(data.aws_ssm_parameter.clients.value))
 }

@@ -5,11 +5,11 @@
 !*.env.j2
 
 # Terraform
-terraform/.terraform/
-terraform/.terraform.lock.hcl
-terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
-terraform/*.tfvars
+tofu/.tofu/
+tofu/.terraform.lock.hcl
+tofu/terraform.tfstate
+tofu/terraform.tfstate.backup
+tofu/*.tfvars
 
 # Ansible — generated and secret files
 ansible/inventory/hosts.yml

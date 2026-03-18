@@ -44,7 +44,7 @@ aws s3api put-public-access-block \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
 # Write backend.hcl for tofu init -backend-config
-BACKEND_HCL="$(dirname "$0")/../terraform/backend.hcl"
+BACKEND_HCL="$(dirname "$0")/../tofu/backend.hcl"
 cat > "${BACKEND_HCL}" <<EOF
 bucket  = "${BUCKET}"
 region  = "${REGION}"
@@ -64,10 +64,10 @@ aws ssm put-parameter \
 
 echo
 echo "State bucket ready."
-echo "backend.hcl written to terraform/backend.hcl"
+echo "backend.hcl written to tofu/backend.hcl"
 echo
 echo "Populate /clawless/clients before running tofu plan:"
 echo "  aws ssm put-parameter --name /clawless/clients --type String --overwrite \\"
 echo "    --value '{\"test\":{\"display_name\":\"Test Client\",\"active\":true}}'"
 echo
-echo "Then: cd terraform && tofu init -backend-config=backend.hcl"
+echo "Then: cd tofu && tofu init -backend-config=backend.hcl"
