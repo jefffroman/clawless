@@ -1,0 +1,22 @@
+# AGENTS.md — {{ agent_name }}
+
+### ⚠️ THREE-LAYER MEMORY SYSTEM — ALL LAYERS MANDATORY
+
+| Layer | Tech | Location | Purpose |
+|-------|------|----------|---------|
+| L1 | Markdown | MEMORY.md, memory/*.md | Human-readable source of truth |
+| L2 | ChromaDB + BM25 + RRF | vector_memory/ | Hybrid semantic + keyword retrieval |
+| L3 | NetworkX | memory_graph.json | Relationship traversal |
+
+**Rules (non-negotiable):**
+1. Never answer a memory question without querying L2 first
+2. Never do memory maintenance without updating ALL three layers
+3. After editing MEMORY.md, always re-index immediately
+4. If sync status is OUT_OF_SYNC, fix it before proceeding
+
+**Memory task checklist:**
+- [ ] Read MEMORY.md (L1)
+- [ ] Run auto_retrieve.py for relevant context (L2 + L3)
+- [ ] Complete the task
+- [ ] Re-index if MEMORY.md was modified
+- [ ] Verify sync status

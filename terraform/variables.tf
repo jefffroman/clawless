@@ -29,8 +29,12 @@ variable "clients" {
     Tailscale auth keys are sensitive — store in a tfvars file excluded from git.
   EOT
   type = map(object({
-    display_name = string
-    active       = optional(bool, true)
+    display_name  = string
+    active        = optional(bool, true)
+    # Storefront fields — injected at signup time; omit for manual provisioning
+    agent_name    = optional(string, null)
+    agent_style   = optional(string, null)
+    agent_channel = optional(string, null)
   }))
   sensitive = false
   default   = {}

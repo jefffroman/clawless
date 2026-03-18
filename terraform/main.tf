@@ -46,8 +46,12 @@ resource "null_resource" "provision" {
       ansible-playbook \
         -i "${module.client[each.key].instance_public_ip}," \
         -e "client_slug=${each.key}" \
+        -e "display_name=${each.value.display_name}" \
         -e "openclaw_bedrock_region=${var.aws_region}" \
         -e "openclaw_backup_bucket=${module.client[each.key].backup_bucket_name}" \
+        ${each.value.agent_name != null ? "-e agent_name=${each.value.agent_name}" : ""} \
+        ${each.value.agent_style != null ? "-e agent_style=${each.value.agent_style}" : ""} \
+        ${each.value.agent_channel != null ? "-e agent_channel=${each.value.agent_channel}" : ""} \
         playbooks/provision.yml
     EOT
   }

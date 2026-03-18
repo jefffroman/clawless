@@ -34,3 +34,4 @@
     - role: common
     - role: openclaw
     - role: backup
+    - role: memory
