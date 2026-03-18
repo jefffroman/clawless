@@ -1,3 +1,12 @@
+terraform {
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      configuration_aliases = [aws.backup]
+    }
+  }
+}
+
 locals {
   name_prefix = "clawless-${var.client_slug}"
   tags = merge(var.tags, {
@@ -6,6 +15,133 @@ locals {
 }
 
 data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+# ── S3 Workspace Backup (primary region) ──────────────────────────────────────
+
+resource "aws_s3_bucket" "workspace_backup" {
+  bucket = "${local.name_prefix}-backup-${data.aws_caller_identity.current.account_id}"
+  tags   = local.tags
+}
+
+resource "aws_s3_bucket_versioning" "workspace_backup" {
+  bucket = aws_s3_bucket.workspace_backup.id
+  versioning_configuration {
+    status = "Enabled" # Required for CRR source
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "workspace_backup" {
+  bucket = aws_s3_bucket.workspace_backup.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "workspace_backup" {
+  bucket                  = aws_s3_bucket.workspace_backup.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ── S3 Replica Bucket (backup region) ────────────────────────────────────────
+
+resource "aws_s3_bucket" "workspace_backup_replica" {
+  provider = aws.backup
+  bucket   = "${local.name_prefix}-backup-replica-${data.aws_caller_identity.current.account_id}"
+  tags     = local.tags
+}
+
+resource "aws_s3_bucket_versioning" "workspace_backup_replica" {
+  provider = aws.backup
+  bucket   = aws_s3_bucket.workspace_backup_replica.id
+  versioning_configuration {
+    status = "Enabled" # Required for CRR destination
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "workspace_backup_replica" {
+  provider = aws.backup
+  bucket   = aws_s3_bucket.workspace_backup_replica.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "workspace_backup_replica" {
+  provider                = aws.backup
+  bucket                  = aws_s3_bucket.workspace_backup_replica.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ── CRR Replication Role ──────────────────────────────────────────────────────
+
+resource "aws_iam_role" "replication" {
+  name = "${local.name_prefix}-s3-replication"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "s3.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "replication" {
+  name = "s3-replication"
+  role = aws_iam_role.replication.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetReplicationConfiguration", "s3:ListBucket"]
+        Resource = aws_s3_bucket.workspace_backup.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectVersionTagging"]
+        Resource = "${aws_s3_bucket.workspace_backup.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"]
+        Resource = "${aws_s3_bucket.workspace_backup_replica.arn}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_s3_bucket_replication_configuration" "workspace_backup" {
+  bucket = aws_s3_bucket.workspace_backup.id
+  role   = aws_iam_role.replication.arn
+
+  rule {
+    id     = "replicate-workspace"
+    status = "Enabled"
+
+    destination {
+      bucket        = aws_s3_bucket.workspace_backup_replica.arn
+      storage_class = "STANDARD_IA" # Cheaper for replica we hope never to need
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.workspace_backup]
+}
 
 # ── IAM Role (SSM trust) ──────────────────────────────────────────────────────
 # Lightsail has no native instance profile support, so we use SSM Hybrid
@@ -51,10 +187,30 @@ resource "aws_iam_role_policy" "bedrock" {
   })
 }
 
+resource "aws_iam_role_policy" "s3_backup" {
+  name = "s3-workspace-backup"
+  role = aws_iam_role.ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "WorkspaceBackup"
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+      ]
+      Resource = [
+        aws_s3_bucket.workspace_backup.arn,
+        "${aws_s3_bucket.workspace_backup.arn}/*",
+      ]
+    }]
+  })
+}
+
 # ── SSM Activation ────────────────────────────────────────────────────────────
-# One-time activation credentials passed to the instance via user_data.
-# After the instance registers, SSM manages credential rotation automatically.
-# expiration_date is ignored after creation to prevent plan churn.
 
 resource "aws_ssm_activation" "this" {
   name               = local.name_prefix
@@ -76,10 +232,6 @@ resource "aws_lightsail_instance" "this" {
   blueprint_id      = var.blueprint_id
   bundle_id         = var.bundle_id
 
-  # Registers the instance with SSM on first boot.
-  # SSM agent is pre-installed on Ubuntu-based Lightsail blueprints.
-  # After registration, the AWS SDK on the instance picks up rotating
-  # temporary credentials automatically via the SSM credential provider.
   user_data = <<-EOT
     #!/bin/bash
     set -euo pipefail
@@ -94,7 +246,6 @@ resource "aws_lightsail_instance" "this" {
 }
 
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
-# Allowlist-only: port 18789 (OpenClaw gateway) is intentionally absent.
 
 resource "aws_lightsail_instance_public_ports" "this" {
   instance_name = aws_lightsail_instance.this.name

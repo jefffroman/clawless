@@ -24,6 +24,11 @@ variable "blueprint_id" {
   type        = string
 }
 
+variable "openclaw_workspace_dir" {
+  description = "Path on the instance containing OpenClaw's agent workspace."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags to merge onto all resources alongside the per-client Client tag."
   type        = map(string)

@@ -1,0 +1,59 @@
+---
+# Role: backup
+# Installs a systemd timer that syncs the OpenClaw workspace to S3 hourly.
+# AWS credentials come from SSM (no keys needed here).
+
+- name: Install AWS CLI
+  ansible.builtin.apt:
+    name: awscli
+    state: present
+
+- name: Deploy workspace backup script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/clawless-backup
+    mode: "0755"
+    owner: root
+    group: root
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      exec aws s3 sync \
+        "{{ openclaw_workspace_dir }}/" \
+        "s3://{{ openclaw_backup_bucket }}/workspace/" \
+        --delete \
+        --no-progress
+
+- name: Deploy backup systemd service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clawless-backup.service
+    content: |
+      [Unit]
+      Description=Clawless OpenClaw workspace backup to S3
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/clawless-backup
+      User={{ openclaw_user | default('openclaw') }}
+  notify: Reload systemd daemon
+
+- name: Deploy backup systemd timer unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clawless-backup.timer
+    content: |
+      [Unit]
+      Description=Run Clawless workspace backup {{ backup_timer_schedule }}
+
+      [Timer]
+      OnCalendar={{ backup_timer_schedule }}
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload systemd daemon
+
+- name: Enable and start backup timer
+  ansible.builtin.systemd:
+    name: clawless-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

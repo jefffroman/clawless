@@ -35,6 +35,18 @@ variable "clients" {
   default   = {}
 }
 
+variable "backup_region" {
+  description = "Secondary AWS region for S3 cross-region replication. Should be geographically distant from aws_region."
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "openclaw_workspace_dir" {
+  description = "Path on the Lightsail instance containing OpenClaw's agent workspace (conversation history, memory, files). Verify on a real instance — exact path depends on the blueprint version."
+  type        = string
+  default     = "/var/lib/openclaw/workspace"
+}
+
 variable "tags" {
   description = "Tags applied to all taggable resources."
   type        = map(string)
