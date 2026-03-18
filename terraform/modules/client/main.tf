@@ -263,6 +263,27 @@ resource "aws_iam_role_policy" "s3_backup" {
   policy = data.aws_iam_policy_document.s3_backup.json
 }
 
+data "aws_iam_policy_document" "cloudwatch_backup" {
+  statement {
+    sid       = "BackupMetrics"
+    effect    = "Allow"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["Clawless/Backup"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "cloudwatch_backup" {
+  name   = "cloudwatch-backup-metrics"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.cloudwatch_backup.json
+}
+
 # ── SSM Activation ────────────────────────────────────────────────────────────
 
 resource "aws_ssm_activation" "this" {

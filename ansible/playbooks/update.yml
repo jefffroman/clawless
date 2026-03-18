@@ -1,0 +1,47 @@
+---
+# Rolls out the latest OpenClaw release to one or more nodes.
+# Runs one host at a time (serial: 1) so a bad update doesn't take down
+# all clients simultaneously.
+#
+# Usage:
+#   # All active nodes:
+#   ansible-playbook -i "<ip1>,<ip2>," playbooks/update.yml
+#
+#   # Single client (via inventory):
+#   ansible-playbook -i inventory/hosts.yml playbooks/update.yml -l acme
+
+- name: Update OpenClaw
+  hosts: all
+  become: true
+  gather_facts: false
+  serial: 1
+
+  pre_tasks:
+    - name: Wait for instance to be reachable via SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0  # Always refresh for updates
+
+    - name: Upgrade OpenClaw package
+      ansible.builtin.apt:
+        name: openclaw
+        state: latest
+      register: openclaw_upgraded
+
+    - name: Restart OpenClaw after upgrade
+      ansible.builtin.systemd:
+        name: "{{ openclaw_service_name }}"
+        state: restarted
+      when: openclaw_upgraded.changed
+
+    - name: Verify gateway is listening after update
+      ansible.builtin.wait_for:
+        host: "{{ openclaw_gateway_host }}"
+        port: "{{ openclaw_gateway_port }}"
+        timeout: 30
+        state: started

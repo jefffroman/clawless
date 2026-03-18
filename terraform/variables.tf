@@ -54,6 +54,17 @@ variable "openclaw_workspace_dir" {
   default     = "/var/lib/openclaw/workspace"
 }
 
+variable "alert_email" {
+  description = "Email address for operator alerts (Bedrock budget, backup failures). Requires manual confirmation of the SNS subscription after first apply."
+  type        = string
+}
+
+variable "bedrock_monthly_budget_usd" {
+  description = "Monthly Bedrock spend threshold in USD. Alerts fire at 80% and 100%."
+  type        = number
+  default     = 50
+}
+
 variable "tags" {
   description = "Tags applied to all taggable resources."
   type        = map(string)

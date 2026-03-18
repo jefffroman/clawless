@@ -12,11 +12,26 @@
     content: |
       #!/bin/bash
       set -euo pipefail
-      exec aws s3 sync \
+      if aws s3 sync \
         "{{ openclaw_workspace_dir }}/" \
         "s3://{{ openclaw_backup_bucket }}/workspace/" \
         --delete \
-        --no-progress
+        --no-progress; then
+        aws cloudwatch put-metric-data \
+          --region "{{ openclaw_bedrock_region }}" \
+          --namespace "Clawless/Backup" \
+          --metric-name "BackupFailure" \
+          --dimensions "ClientSlug={{ client_slug }}" \
+          --value 0 --unit Count
+      else
+        aws cloudwatch put-metric-data \
+          --region "{{ openclaw_bedrock_region }}" \
+          --namespace "Clawless/Backup" \
+          --metric-name "BackupFailure" \
+          --dimensions "ClientSlug={{ client_slug }}" \
+          --value 1 --unit Count
+        exit 1
+      fi
 
 - name: Deploy backup systemd service unit
   ansible.builtin.copy:
