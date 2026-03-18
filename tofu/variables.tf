@@ -19,7 +19,7 @@ variable "lightsail_bundle_id" {
 variable "lightsail_blueprint_id" {
   description = "Lightsail blueprint ID for OpenClaw. Verify exact ID in the AWS Lightsail console — it evolves with OpenClaw releases."
   type        = string
-  default     = "openclaw"
+  default     = "openclaw_ls_1_0"
 }
 
 variable "provisioner_public_key_path" {
