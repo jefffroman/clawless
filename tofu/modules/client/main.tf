@@ -324,6 +324,27 @@ resource "aws_lightsail_instance" "this" {
   tags = local.tags
 }
 
+# ── Lightsail Instance Ready Wait ─────────────────────────────────────────────
+# Lightsail rejects PutInstancePublicPorts while the instance is in "pending"
+# state. Poll until "running" before proceeding with firewall configuration.
+
+resource "null_resource" "instance_running" {
+  count = var.active ? 1 : 0
+
+  depends_on = [aws_lightsail_instance.this]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      until aws lightsail get-instance \
+        --instance-name ${aws_lightsail_instance.this[0].name} \
+        --query 'instance.state.name' \
+        --output text 2>/dev/null | grep -q running; do
+        sleep 5
+      done
+    EOT
+  }
+}
+
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
 # All setup ports restricted to the provisioner's IP.
 # NOTE: if webhook-based channel integrations are used, port 443 will need
@@ -333,6 +354,7 @@ resource "aws_lightsail_instance" "this" {
 resource "aws_lightsail_instance_public_ports" "this" {
   count = var.active ? 1 : 0
 
+  depends_on    = [null_resource.instance_running]
   instance_name = aws_lightsail_instance.this[0].name
 
   port_info {
