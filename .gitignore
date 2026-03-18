@@ -11,6 +11,6 @@ terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/*.tfvars
 
-# Ansible secrets
+# Ansible — generated and secret files
 ansible/inventory/hosts.yml
-ansible/host_vars/*/vault.yml
+ansible/host_vars/*/vars.yml
