@@ -1,0 +1,17 @@
+---
+all:
+  children:
+    clawless_nodes:
+      vars:
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        openclaw_bedrock_region: us-east-1
+      hosts:
+        # Paste the ansible_inventory_snippet terraform output here after provisioning.
+        # Store per-host secrets in host_vars/<slug>/vault.yml (ansible-vault encrypted).
+        acme:
+          ansible_host: 1.2.3.4
+          client_slug: acme
+          openclaw_gateway_token: "REPLACE_ME"
+          openclaw_aws_access_key_id: "REPLACE_ME"
+          openclaw_aws_secret_access_key: "REPLACE_ME"

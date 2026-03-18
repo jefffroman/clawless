@@ -1,0 +1,19 @@
+---
+- name: Post-provision setup for Clawless OpenClaw nodes
+  hosts: clawless_nodes
+  become: true
+  gather_facts: false
+  serial: 5
+
+  pre_tasks:
+    - name: Wait for instance to be reachable via SSH
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: common
+    - role: openclaw

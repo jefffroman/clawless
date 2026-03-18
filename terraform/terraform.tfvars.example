@@ -1,0 +1,16 @@
+aws_region                  = "us-east-1"
+lightsail_availability_zone = "us-east-1a"
+lightsail_bundle_id         = "medium_3_0"
+lightsail_blueprint_id      = "openclaw"   # verify exact ID in AWS Lightsail console
+
+clients = {
+  acme = {
+    display_name = "Acme Corp"
+  }
+}
+
+tags = {
+  Project   = "clawless"
+  ManagedBy = "terraform"
+  Env       = "production"
+}

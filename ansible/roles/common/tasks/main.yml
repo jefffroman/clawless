@@ -1,0 +1,47 @@
+---
+# Addresses CONTEXT.md security note: "Lightsail blueprint shipped with outdated kernel;
+# run apt upgrade post-provision."
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Full dist-upgrade (addresses outdated kernel in Lightsail blueprint)
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: true
+    autoclean: true
+  register: apt_upgrade_result
+
+- name: Install essential packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - unattended-upgrades
+      - jq
+    state: present
+
+- name: Configure unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set timezone to UTC
+  community.general.timezone:
+    name: UTC
+
+- name: Reboot if kernel was upgraded
+  ansible.builtin.reboot:
+    reboot_timeout: 300
+    msg: "Rebooting after kernel upgrade"
+  when: apt_upgrade_result.changed
