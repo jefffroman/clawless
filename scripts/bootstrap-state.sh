@@ -50,7 +50,24 @@ bucket  = "${BUCKET}"
 region  = "${REGION}"
 EOF
 
+# Create the clients SSM parameter if it doesn't exist.
+# The storefront Lambda writes to this on signup; for testing, populate manually:
+#   aws ssm put-parameter --name /clawless/clients --type String --overwrite \
+#     --value '{"test":{"display_name":"Test Client","active":true}}'
+aws ssm put-parameter \
+  --name "/clawless/clients" \
+  --type "String" \
+  --value "{}" \
+  --region "${REGION}" 2>/dev/null \
+  && echo "Created SSM parameter /clawless/clients (empty)" \
+  || echo "SSM parameter /clawless/clients already exists — skipping"
+
+echo
 echo "State bucket ready."
 echo "backend.hcl written to terraform/backend.hcl"
 echo
-echo "Commit backend.hcl, then: cd terraform && tofu init -backend-config=backend.hcl"
+echo "Populate /clawless/clients before running tofu plan:"
+echo "  aws ssm put-parameter --name /clawless/clients --type String --overwrite \\"
+echo "    --value '{\"test\":{\"display_name\":\"Test Client\",\"active\":true}}'"
+echo
+echo "Then: cd terraform && tofu init -backend-config=backend.hcl"

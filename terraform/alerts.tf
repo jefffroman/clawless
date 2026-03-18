@@ -34,7 +34,7 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 # is inactive, no metrics are expected.
 
 resource "aws_cloudwatch_metric_alarm" "backup_failure" {
-  for_each = var.clients
+  for_each = local.clients
 
   alarm_name        = "clawless-${each.key}-backup-failure"
   alarm_description = "Workspace backup to S3 failed for client ${each.key}"

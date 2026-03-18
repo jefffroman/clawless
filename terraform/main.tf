@@ -12,29 +12,29 @@ locals {
 
 module "client" {
   source   = "./modules/client"
-  for_each = var.clients
+  for_each = local.clients
 
   providers = {
     aws        = aws
     aws.backup = aws.backup
   }
 
-  client_slug            = each.key
-  display_name           = each.value.display_name
-  active                 = each.value.active
-  availability_zone      = var.lightsail_availability_zone
-  bundle_id              = var.lightsail_bundle_id
-  blueprint_id           = var.lightsail_blueprint_id
-  key_pair_name          = aws_lightsail_key_pair.ansible.name
-  provisioner_cidr       = local.provisioner_cidr
-  tags                   = var.tags
+  client_slug       = each.key
+  display_name      = each.value.display_name
+  active            = try(each.value.active, true)
+  availability_zone = var.lightsail_availability_zone
+  bundle_id         = var.lightsail_bundle_id
+  blueprint_id      = var.lightsail_blueprint_id
+  key_pair_name     = aws_lightsail_key_pair.ansible.name
+  provisioner_cidr  = local.provisioner_cidr
+  tags              = var.tags
 }
 
 # After provisioning, call Ansible directly for each client.
 # The gateway token is generated on the remote instance by Ansible and never
 # leaves it — it is not passed here, not stored in state, not written locally.
 resource "null_resource" "provision" {
-  for_each = { for k, v in var.clients : k => v if v.active }
+  for_each = { for k, v in local.clients : k => v if try(v.active, true) }
 
   triggers = {
     instance_name = module.client[each.key].instance_name
@@ -49,9 +49,9 @@ resource "null_resource" "provision" {
         -e "display_name=${each.value.display_name}" \
         -e "openclaw_bedrock_region=${var.aws_region}" \
         -e "openclaw_backup_bucket=${module.client[each.key].backup_bucket_name}" \
-        ${each.value.agent_name != null ? "-e agent_name=${each.value.agent_name}" : ""} \
-        ${each.value.agent_style != null ? "-e agent_style=${each.value.agent_style}" : ""} \
-        ${each.value.agent_channel != null ? "-e agent_channel=${each.value.agent_channel}" : ""} \
+        ${try(each.value.agent_name, null) != null ? "-e agent_name=${each.value.agent_name}" : ""} \
+        ${try(each.value.agent_style, null) != null ? "-e agent_style=${each.value.agent_style}" : ""} \
+        ${try(each.value.agent_channel, null) != null ? "-e agent_channel=${each.value.agent_channel}" : ""} \
         playbooks/provision.yml
     EOT
   }

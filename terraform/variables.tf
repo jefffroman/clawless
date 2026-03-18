@@ -22,24 +22,6 @@ variable "lightsail_blueprint_id" {
   default     = "openclaw"
 }
 
-variable "clients" {
-  description = <<-EOT
-    Map of client slugs to their configuration.
-    Each entry provisions one Lightsail instance and one IAM Bedrock user.
-    Tailscale auth keys are sensitive — store in a tfvars file excluded from git.
-  EOT
-  type = map(object({
-    display_name  = string
-    active        = optional(bool, true)
-    # Storefront fields — injected at signup time; omit for manual provisioning
-    agent_name    = optional(string, null)
-    agent_style   = optional(string, null)
-    agent_channel = optional(string, null)
-  }))
-  sensitive = false
-  default   = {}
-}
-
 variable "provisioner_public_key_path" {
   description = "Path to the public key used by Ansible for SSH provisioning."
   type        = string
