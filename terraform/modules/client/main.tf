@@ -85,45 +85,47 @@ resource "aws_s3_bucket_public_access_block" "workspace_backup_replica" {
 
 # ── CRR Replication Role ──────────────────────────────────────────────────────
 
+data "aws_iam_policy_document" "replication_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "replication" {
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:GetReplicationConfiguration", "s3:ListBucket"]
+    resources = [aws_s3_bucket.workspace_backup.arn]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectVersionTagging"]
+    resources = ["${aws_s3_bucket.workspace_backup.arn}/*"]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"]
+    resources = ["${aws_s3_bucket.workspace_backup_replica.arn}/*"]
+  }
+}
+
 resource "aws_iam_role" "replication" {
-  name = "${local.name_prefix}-s3-replication"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "s3.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = local.tags
+  name               = "${local.name_prefix}-s3-replication"
+  assume_role_policy = data.aws_iam_policy_document.replication_assume.json
+  tags               = local.tags
 }
 
 resource "aws_iam_role_policy" "replication" {
-  name = "s3-replication"
-  role = aws_iam_role.replication.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetReplicationConfiguration", "s3:ListBucket"]
-        Resource = aws_s3_bucket.workspace_backup.arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectVersionTagging"]
-        Resource = "${aws_s3_bucket.workspace_backup.arn}/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"]
-        Resource = "${aws_s3_bucket.workspace_backup_replica.arn}/*"
-      }
-    ]
-  })
+  name   = "s3-replication"
+  role   = aws_iam_role.replication.id
+  policy = data.aws_iam_policy_document.replication.json
 }
 
 resource "aws_s3_bucket_replication_configuration" "workspace_backup" {
@@ -149,19 +151,47 @@ resource "aws_s3_bucket_replication_configuration" "workspace_backup" {
 # SSM then issues rotating 1-hour temporary credentials automatically.
 # No long-lived access keys are created or stored anywhere.
 
+data "aws_iam_policy_document" "ssm_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ssm.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "bedrock" {
+  statement {
+    sid       = "BedrockInvokeModel"
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = ["*"]
+  }
+}
+
+data "aws_iam_policy_document" "s3_backup" {
+  statement {
+    sid    = "WorkspaceBackup"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      aws_s3_bucket.workspace_backup.arn,
+      "${aws_s3_bucket.workspace_backup.arn}/*",
+    ]
+  }
+}
+
 resource "aws_iam_role" "ssm" {
-  name = "${local.name_prefix}-ssm"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ssm.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = local.tags
+  name               = "${local.name_prefix}-ssm"
+  assume_role_policy = data.aws_iam_policy_document.ssm_assume.json
+  tags               = local.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
@@ -170,44 +200,15 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 }
 
 resource "aws_iam_role_policy" "bedrock" {
-  name = "bedrock-invoke"
-  role = aws_iam_role.ssm.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "BedrockInvokeModel"
-      Effect = "Allow"
-      Action = [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream",
-      ]
-      Resource = "*"
-    }]
-  })
+  name   = "bedrock-invoke"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.bedrock.json
 }
 
 resource "aws_iam_role_policy" "s3_backup" {
-  name = "s3-workspace-backup"
-  role = aws_iam_role.ssm.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "WorkspaceBackup"
-      Effect = "Allow"
-      Action = [
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:ListBucket",
-      ]
-      Resource = [
-        aws_s3_bucket.workspace_backup.arn,
-        "${aws_s3_bucket.workspace_backup.arn}/*",
-      ]
-    }]
-  })
+  name   = "s3-workspace-backup"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.s3_backup.json
 }
 
 # ── SSM Activation ────────────────────────────────────────────────────────────
