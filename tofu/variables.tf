@@ -44,6 +44,12 @@ variable "bedrock_monthly_budget_usd" {
   default     = 50
 }
 
+variable "golden_snapshot_name" {
+  description = "Lightsail snapshot name to use for new client instances instead of the blueprint. Set by bake-snapshot.sh after a successful golden bake. Empty string means fall back to blueprint_id."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags applied to all taggable resources."
   type        = map(string)

@@ -1,0 +1,49 @@
+---
+# Base image bake: runs once on the golden template instance.
+# Applies system updates and pre-installs slow Python packages so that
+# provision-client.yml (which runs per new client) is fast.
+# No client-specific configuration — this produces a generic, reusable image.
+- name: Bake base image for Clawless OpenClaw nodes
+  hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for instance to be reachable via SSH
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: common
+
+  post_tasks:
+    - name: Ensure workspace vector_memory directory exists
+      ansible.builtin.file:
+        path: /var/lib/openclaw/workspace/vector_memory
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0750"
+
+    # Pre-install memory packages so provision-client.yml skips the slow download.
+    # The memory role uses creates: on venv creation, so this is idempotent.
+    - name: Create Python venv for memory packages
+      ansible.builtin.command:
+        cmd: python3 -m venv /var/lib/openclaw/workspace/vector_memory/venv
+        creates: /var/lib/openclaw/workspace/vector_memory/venv/bin/activate
+      become_user: ubuntu
+
+    - name: Pre-install memory Python packages
+      ansible.builtin.pip:
+        name:
+          - chromadb
+          - sentence-transformers
+          - networkx
+          - rank-bm25
+        virtualenv: /var/lib/openclaw/workspace/vector_memory/venv
+        state: present
+      become_user: ubuntu

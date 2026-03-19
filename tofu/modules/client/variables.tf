@@ -20,8 +20,14 @@ variable "bundle_id" {
 }
 
 variable "blueprint_id" {
-  description = "Lightsail blueprint ID."
+  description = "Lightsail blueprint ID. Used only when both snapshot variables are empty."
   type        = string
+}
+
+variable "golden_snapshot_name" {
+  description = "Golden snapshot name for new client provisioning. Takes precedence over blueprint_id. Empty string means use blueprint."
+  type        = string
+  default     = ""
 }
 
 variable "key_pair_name" {

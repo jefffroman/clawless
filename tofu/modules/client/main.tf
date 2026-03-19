@@ -9,6 +9,13 @@ terraform {
 
 locals {
   name_prefix = "clawless-${var.client_slug}"
+
+  # Discover per-client pause snapshot by fixed name convention.
+  # Falls back to golden snapshot, then blueprint (empty string = blueprint path).
+  client_snap   = data.external.client_snapshot.result.state == "available" ? data.external.client_snapshot.result.name : ""
+  snapshot_name = coalesce(local.client_snap, var.golden_snapshot_name, "")
+  use_snapshot  = local.snapshot_name != ""
+
   tags = merge(var.tags, {
     Client = var.client_slug
     Active = tostring(var.active)
@@ -17,6 +24,16 @@ locals {
 
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
+
+# Discover a per-client pause snapshot by fixed name (clawless-{slug}-snap).
+# Returns state="available" and name if found; empty strings otherwise.
+# pause.sh creates this snapshot; resume.sh deletes it after restore.
+data "external" "client_snapshot" {
+  program = [
+    "bash", "-c",
+    "aws lightsail get-instance-snapshot --instance-snapshot-name clawless-${var.client_slug}-snap --region ${data.aws_region.current.name} --query '{\"name\":instanceSnapshot.name,\"state\":instanceSnapshot.state}' --output json 2>/dev/null || printf '{\"name\":\"\",\"state\":\"\"}'"
+  ]
+}
 
 # ── S3 Workspace Backup (primary region) ──────────────────────────────────────
 
@@ -300,10 +317,11 @@ resource "aws_ssm_activation" "this" {
   }
 }
 
-# ── Lightsail Instance ────────────────────────────────────────────────────────
+# ── Lightsail Instance (blueprint path) ───────────────────────────────────────
+# Used when no snapshot is configured — very first setup before a golden bake exists.
 
 resource "aws_lightsail_instance" "this" {
-  count = var.active ? 1 : 0
+  count = var.active && !local.use_snapshot ? 1 : 0
 
   name              = local.name_prefix
   availability_zone = var.availability_zone
@@ -328,23 +346,75 @@ resource "aws_lightsail_instance" "this" {
   tags = local.tags
 }
 
+# ── Lightsail Instance (snapshot path) ────────────────────────────────────────
+# Used for both new clients (golden snapshot) and resume (per-client snapshot).
+# The AWS provider does not support snapshot-based creation in aws_lightsail_instance,
+# so we drive it via the CLI.
+#
+# user_data is identical for both cases: the script re-registers the SSM agent
+# only if /var/lib/amazon/ssm/registration is absent (golden path, cleared during
+# bake). Resume instances carry their mi-XXXX identity in the snapshot, so the
+# check is a no-op and they reconnect automatically.
+
+resource "null_resource" "instance_from_snapshot" {
+  count = var.active && local.use_snapshot ? 1 : 0
+
+  triggers = {
+    instance_name = local.name_prefix
+    snapshot_name = local.snapshot_name
+  }
+
+  depends_on = [aws_ssm_activation.this]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
+      _tmpud=$(mktemp /tmp/clawless-userdata-XXXXXX.sh)
+      trap 'rm -f "$_tmpud"' EXIT
+      cat > "$_tmpud" <<'USERDATA'
+set -eu
+if [ ! -s /var/lib/amazon/ssm/registration ]; then
+  /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
+    -id ${try(aws_ssm_activation.this[0].id, "")} \
+    -code ${try(aws_ssm_activation.this[0].activation_code, "")} \
+    -region ${data.aws_region.current.name}
+  systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
+fi
+USERDATA
+      aws lightsail create-instances-from-snapshot \
+        --instance-names "${local.name_prefix}" \
+        --availability-zone "${var.availability_zone}" \
+        --bundle-id "${var.bundle_id}" \
+        --instance-snapshot-name "${local.snapshot_name}" \
+        --user-data "file://$_tmpud"
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "aws lightsail delete-instance --instance-name ${self.triggers.instance_name} --force-delete-add-ons 2>/dev/null || true"
+  }
+}
+
 # ── Lightsail Instance Ready Wait ─────────────────────────────────────────────
 # Lightsail rejects PutInstancePublicPorts while the instance is in "pending"
 # state. Poll until "running" before proceeding with firewall configuration.
+# Instance name is deterministic (clawless-{slug}) regardless of creation path.
 
 resource "null_resource" "instance_running" {
   count = var.active ? 1 : 0
 
   triggers = {
-    instance_id = aws_lightsail_instance.this[0].id
+    # Tracks whichever creation resource fired so this re-runs on instance replacement.
+    instance_ref = local.use_snapshot ? local.snapshot_name : try(aws_lightsail_instance.this[0].id, "")
   }
 
-  depends_on = [aws_lightsail_instance.this]
+  depends_on = [aws_lightsail_instance.this, null_resource.instance_from_snapshot]
 
   provisioner "local-exec" {
     command = <<-EOT
       until aws lightsail get-instance \
-        --instance-name ${aws_lightsail_instance.this[0].name} \
+        --instance-name ${local.name_prefix} \
         --query 'instance.state.name' \
         --output text 2>/dev/null | grep -q running; do
         sleep 5
@@ -363,7 +433,7 @@ resource "aws_lightsail_instance_public_ports" "this" {
   count = var.active ? 1 : 0
 
   depends_on    = [null_resource.instance_running]
-  instance_name = aws_lightsail_instance.this[0].name
+  instance_name = local.name_prefix # Deterministic regardless of creation path
 
   lifecycle {
     replace_triggered_by = [null_resource.instance_running]

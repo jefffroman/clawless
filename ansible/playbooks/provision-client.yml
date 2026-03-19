@@ -1,0 +1,48 @@
+---
+# Thin client-specific provisioning: runs after instance creation from golden snapshot.
+# System software and memory packages are already baked in; this only writes
+# client config, injects channel credentials, and seeds the workspace.
+- name: Configure Clawless OpenClaw node for a specific client
+  hosts: all
+  become: true
+  gather_facts: false
+  serial: 5
+
+  pre_tasks:
+    - name: Wait for instance to be reachable via SSH
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+
+    - name: Wait for cloud-init to finish (ensures user_data SSM registration is complete)
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      # cloud-init exits 1 on snapshot-restored instances because it re-runs modules
+      # that already ran (SSH key generation, network config, etc.) and can't redo them
+      # cleanly. The exit code reflects those cosmetic module failures, not whether our
+      # user_data script ran. SSM registration is verified by the next task.
+      failed_when: false
+
+    - name: Wait for instance to register with SSM
+      delegate_to: localhost
+      become: false
+      ansible.builtin.shell:
+        cmd: >
+          aws ssm describe-instance-information
+          --filters 'Key=IamRole,Values=clawless-{{ client_slug }}-ssm'
+          --region '{{ openclaw_bedrock_region }}'
+          --query 'InstanceInformationList[0].InstanceId'
+          --output text
+      register: ssm_registration
+      until: ssm_registration.stdout | length > 0 and ssm_registration.stdout != "None"
+      retries: 20
+      delay: 15
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: openclaw
+    - role: backup
+    - role: memory
