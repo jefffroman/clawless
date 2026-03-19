@@ -89,7 +89,11 @@ ansible_s3_bucket = "${BUCKET}"
 EOF
 echo "terraform.tfvars written"
 
-# ── SSM /clawless/clients (create empty if missing) ───────────────────────────
+# ── Upload tfvars to S3 for Lambda access ─────────────────────────────────────
+aws s3 cp "${TOFU_DIR}/terraform.tfvars" "s3://${BUCKET}/config/terraform.tfvars"
+echo "terraform.tfvars uploaded to s3://${BUCKET}/config/terraform.tfvars"
+
+# ── SSM config parameters ─────────────────────────────────────────────────────
 aws ssm put-parameter \
   --name "/clawless/clients" \
   --type "String" \
@@ -97,6 +101,15 @@ aws ssm put-parameter \
   --region "${REGION}" 2>/dev/null \
   && echo "Created SSM parameter /clawless/clients" \
   || echo "SSM parameter /clawless/clients already exists"
+
+ask CLAWLESS_VERSION "Clawless version tag to deploy" "v0.0.1"
+aws ssm put-parameter \
+  --name "/clawless/version" \
+  --type "String" \
+  --value "${CLAWLESS_VERSION}" \
+  --overwrite \
+  --region "${REGION}"
+echo "Version set to ${CLAWLESS_VERSION}"
 
 # ── Add first agent ───────────────────────────────────────────────────────────
 hr
@@ -109,7 +122,7 @@ hr
 echo "Bootstrap complete. Next steps:"
 echo
 echo "  ./scripts/bake-snapshot.sh        # build golden image (includes ansible publish)"
+echo "  ./scripts/build-lambda.sh         # build and push lifecycle Lambda image"
 echo "  cd tofu && tofu init -backend-config=backend.hcl"
-echo "  cd tofu && tofu plan"
 echo "  cd tofu && tofu apply"
 hr

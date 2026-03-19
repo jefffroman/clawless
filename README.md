@@ -116,7 +116,17 @@ Prompts for: client display name, agent name (required), channel integration (Te
 
 Client config is stored in SSM Parameter Store at `/clawless/clients` — this is the source of truth for `tofu apply`.
 
-### 3. Bake the Golden Snapshot
+### 3. Build the Lifecycle Lambda
+
+The lifecycle Lambda handles all client operations (add, remove, pause, resume) triggered automatically by SSM parameter changes. Build and push the container image before the first `tofu apply`:
+
+```bash
+./scripts/build-lambda.sh
+```
+
+Rebuild only when `lambda/Dockerfile` or `lambda/handler.py` change. Tofu config and provider changes are picked up at invocation time from the pinned repo version — no rebuild needed.
+
+### 4. Bake the Golden Snapshot
 
 The golden snapshot pre-installs slow dependencies (Python packages, ansible-core, playbooks) so that per-client provisioning is fast.
 
@@ -136,14 +146,14 @@ This will:
 
 Bake takes approximately 10–15 minutes. Port 22 is never open on production client instances.
 
-### 4. Initialize OpenTofu
+### 5. Initialize OpenTofu
 
 ```bash
 cd tofu
 tofu init -backend-config=backend.hcl
 ```
 
-### 5. Apply
+### 6. Apply
 
 ```bash
 cd tofu
