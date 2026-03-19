@@ -485,32 +485,10 @@ resource "null_resource" "instance_running" {
 }
 
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
-# Port 22 is intentionally omitted — admin access is via SSM Session Manager.
-# NOTE: if webhook-based channel integrations are used, port 443 will need
-# to be opened to 0.0.0.0/0 — update provisioner_cidr to ["0.0.0.0/0"]
-# for the 443 rule at that point.
-
-resource "aws_lightsail_instance_public_ports" "this" {
-  count = var.active ? 1 : 0
-
-  depends_on    = [null_resource.instance_running]
-  instance_name = local.name_prefix # Deterministic regardless of creation path
-
-  lifecycle {
-    replace_triggered_by = [null_resource.instance_running]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 80
-    to_port   = 80
-    cidrs     = [var.provisioner_cidr]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 443
-    to_port   = 443
-    cidrs     = [var.provisioner_cidr]
-  }
-}
+# All inbound ports are closed. No services listen on public interfaces:
+# - Admin access is via SSM Session Manager (no port 22)
+# - OpenClaw gateway binds to loopback only (no port 443)
+# - Channel integrations (Telegram, Discord, Slack) use outbound connections
+#
+# If a webhook-based integration is ever added, open port 443 to 0.0.0.0/0
+# here and add a TLS-terminating reverse proxy + webhook auth on the instance.

@@ -64,11 +64,6 @@ variable "key_pair_name" {
   type        = string
 }
 
-variable "provisioner_cidr" {
-  description = "CIDR of the machine running tofu apply. Setup ports (22, 80, 443) are restricted to this IP."
-  type        = string
-}
-
 variable "active" {
   description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
   type        = bool
