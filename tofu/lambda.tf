@@ -127,6 +127,13 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         "sns:*", "budgets:*"]
         Resource = "*"
       },
+      {
+        # ECR, EventBridge, and Lambda — needed to refresh own resources during tofu apply
+        Sid      = "SelfManaged"
+        Effect   = "Allow"
+        Action   = ["ecr:*", "events:*", "lambda:*"]
+        Resource = "*"
+      },
     ]
   })
 }

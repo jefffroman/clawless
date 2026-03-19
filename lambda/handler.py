@@ -64,15 +64,20 @@ def _apply(work_dir, version):
         os.path.join(tofu_dir, "terraform.tfvars"),
     )
 
-    env = {**os.environ, "TF_PLUGIN_CACHE_DIR": PLUGIN_CACHE_DIR}
+    # Copy read-only plugin cache to writable /tmp so tofu can write lock files
+    plugin_dir = "/tmp/tofu-plugin-cache"
+    if not os.path.exists(plugin_dir):
+        shutil.copytree(PLUGIN_CACHE_DIR, plugin_dir)
+
+    env = {k: v for k, v in os.environ.items() if k != "TF_PLUGIN_CACHE_DIR"}
 
     _run(
-        ["tofu", "init", "-backend-config=backend.hcl", "-input=false"],
+        ["tofu", "init", f"-plugin-dir={plugin_dir}", "-backend-config=backend.hcl", "-input=false"],
         cwd=tofu_dir,
         env=env,
     )
     _run(
-        ["tofu", "apply", "-auto-approve", "-input=false"],
+        ["tofu", "apply", "-auto-approve", "-input=false", "-target=module.client"],
         cwd=tofu_dir,
         env=env,
     )
