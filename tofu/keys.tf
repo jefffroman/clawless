@@ -3,5 +3,5 @@
 # Override provisioner_public_key_path in tfvars if using a different key.
 resource "aws_lightsail_key_pair" "ansible" {
   name       = "clawless-ansible"
-  public_key = file(var.provisioner_public_key_path)
+  public_key = var.provisioner_public_key
 }

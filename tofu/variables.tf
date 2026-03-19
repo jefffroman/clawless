@@ -22,10 +22,9 @@ variable "lightsail_blueprint_id" {
   default     = "openclaw_ls_1_0"
 }
 
-variable "provisioner_public_key_path" {
-  description = "Path to the public key used by Ansible for SSH provisioning."
+variable "provisioner_public_key" {
+  description = "SSH public key content used by Ansible for provisioning (e.g. ssh-ed25519 AAAA...)."
   type        = string
-  default     = "~/.ssh/clawless_ansible.pub"
 }
 
 variable "backup_region" {
