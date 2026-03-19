@@ -24,6 +24,7 @@
       - lsb-release
       - unattended-upgrades
       - jq
+      - python3-venv
     state: present
 
 - name: Configure unattended security upgrades

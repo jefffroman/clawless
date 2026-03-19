@@ -1,6 +1,6 @@
 ---
 - name: Post-provision setup for Clawless OpenClaw nodes
-  hosts: clawless_nodes
+  hosts: all
   become: true
   gather_facts: false
   serial: 5
@@ -14,12 +14,12 @@
     - name: Wait for instance to register with SSM
       delegate_to: localhost
       become: false
-      ansible.builtin.command:
+      ansible.builtin.shell:
         cmd: >
           aws ssm describe-instance-information
-          --filters "Key=IpAddress,Values={{ ansible_host }}"
-          --region "{{ openclaw_bedrock_region }}"
-          --query "InstanceInformationList[0].InstanceId"
+          --filters 'Key=IamRole,Values=clawless-{{ client_slug }}-ssm'
+          --region '{{ openclaw_bedrock_region }}'
+          --query 'InstanceInformationList[0].InstanceId'
           --output text
       register: ssm_registration
       until: ssm_registration.stdout | length > 0 and ssm_registration.stdout != "None"

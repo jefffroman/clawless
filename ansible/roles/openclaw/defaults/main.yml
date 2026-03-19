@@ -6,5 +6,6 @@ openclaw_gateway_port:   18789
 openclaw_config_dir:     /etc/openclaw
 openclaw_env_file:       /etc/openclaw/openclaw.env
 openclaw_config_file:    /etc/openclaw/openclaw.yml
-openclaw_service_name:   openclaw
-openclaw_user:           openclaw
+openclaw_service_name:   openclaw-gateway
+openclaw_user:           ubuntu
+openclaw_workspace_dir:  /var/lib/openclaw/workspace

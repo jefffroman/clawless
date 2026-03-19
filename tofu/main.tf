@@ -42,7 +42,13 @@ resource "null_resource" "provision" {
 
   provisioner "local-exec" {
     working_dir = "${path.root}/../ansible"
-    command     = <<-EOT
+    # channel_config is written to a temp file so its contents (bot tokens etc.)
+    # never appear on the command line or in process listings.
+    command = <<-EOT
+      set -e
+      _tmpvars=$(mktemp /tmp/clawless-ansible-XXXXXX.json)
+      trap 'rm -f "$_tmpvars"' EXIT
+      printf '%s\n' '${jsonencode({channel_config: try(each.value.channel_config, null)})}' > "$_tmpvars"
       ansible-playbook \
         -i "${module.client[each.key].instance_public_ip}," \
         -e "client_slug=${each.key}" \
@@ -52,6 +58,7 @@ resource "null_resource" "provision" {
         ${try(each.value.agent_name, null) != null ? "-e agent_name=${each.value.agent_name}" : ""} \
         ${try(each.value.agent_style, null) != null ? "-e agent_style=${each.value.agent_style}" : ""} \
         ${try(each.value.agent_channel, null) != null ? "-e agent_channel=${each.value.agent_channel}" : ""} \
+        -e "@$_tmpvars" \
         playbooks/provision.yml
     EOT
   }

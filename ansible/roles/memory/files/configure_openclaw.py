@@ -8,6 +8,12 @@ CONFIG_PATH = os.environ.get(
     os.path.expanduser("~/.openclaw/openclaw.json")
 )
 
+# Channel to configure (e.g. "telegram") and its provider-specific config
+# blob (JSON string shaped by the storefront for each channel type).
+# If either is absent the channels block is left untouched.
+CHANNEL = os.environ.get("OPENCLAW_CHANNEL", "").strip().lower()
+CHANNEL_CONFIG = json.loads(os.environ.get("OPENCLAW_CHANNEL_CONFIG", "null") or "null")
+
 MEMORY_SEARCH_BLOCK = {
     "memorySearch": {
         "enabled": True,
@@ -31,6 +37,13 @@ def patch_config():
     print(f"Backed up to {backup}")
 
     config.setdefault("agents", {}).setdefault("defaults", {}).update(MEMORY_SEARCH_BLOCK)
+
+    if CHANNEL and CHANNEL_CONFIG:
+        # Merge into any existing channel block so manually-added fields
+        # (e.g. allowFrom entries added via pairing) survive re-runs.
+        existing = config.setdefault("channels", {}).get(CHANNEL, {})
+        config["channels"][CHANNEL] = {**existing, **CHANNEL_CONFIG}
+        print(f"channels.{CHANNEL} patched")
 
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)

@@ -291,7 +291,7 @@ resource "aws_ssm_activation" "this" {
 
   name               = local.name_prefix
   iam_role           = aws_iam_role.ssm.name
-  registration_limit = 1
+  registration_limit = 5 # Buffer for instance recreation cycles; each new instance uses one slot
 
   depends_on = [aws_iam_role_policy_attachment.ssm_core]
 
@@ -312,13 +312,17 @@ resource "aws_lightsail_instance" "this" {
   key_pair_name     = var.key_pair_name
 
   user_data = <<-EOT
-    #!/bin/bash
-    set -euo pipefail
-    amazon-ssm-agent -register -y \
+    # Clawless: SSM Hybrid Activation registration
+    # Note: this script is appended to the blueprint's /bin/sh init script,
+    # so we use POSIX sh syntax throughout.
+    set -eu
+    snap install amazon-ssm-agent --classic
+    /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
       -id "${aws_ssm_activation.this[0].id}" \
       -code "${aws_ssm_activation.this[0].activation_code}" \
       -region "${data.aws_region.current.name}"
-    systemctl restart amazon-ssm-agent
+    systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent
+    systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
   EOT
 
   tags = local.tags
@@ -330,6 +334,10 @@ resource "aws_lightsail_instance" "this" {
 
 resource "null_resource" "instance_running" {
   count = var.active ? 1 : 0
+
+  triggers = {
+    instance_id = aws_lightsail_instance.this[0].id
+  }
 
   depends_on = [aws_lightsail_instance.this]
 
@@ -356,6 +364,10 @@ resource "aws_lightsail_instance_public_ports" "this" {
 
   depends_on    = [null_resource.instance_running]
   instance_name = aws_lightsail_instance.this[0].name
+
+  lifecycle {
+    replace_triggered_by = [null_resource.instance_running]
+  }
 
   port_info {
     protocol  = "tcp"
