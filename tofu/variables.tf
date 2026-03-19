@@ -22,11 +22,6 @@ variable "lightsail_blueprint_id" {
   default     = "openclaw_ls_1_0"
 }
 
-variable "provisioner_public_key" {
-  description = "SSH public key content used by Ansible for provisioning (e.g. ssh-ed25519 AAAA...)."
-  type        = string
-}
-
 variable "backup_region" {
   description = "Secondary AWS region for S3 cross-region replication. Should be geographically distant from aws_region."
   type        = string
@@ -42,6 +37,11 @@ variable "bedrock_monthly_budget_usd" {
   description = "Monthly Bedrock spend threshold in USD. Alerts fire at 80% and 100%."
   type        = number
   default     = 50
+}
+
+variable "ansible_s3_bucket" {
+  description = "S3 bucket name where the ansible directory is published by publish-ansible.sh. Instances sync playbooks from here at boot. Typically the tofu state bucket."
+  type        = string
 }
 
 variable "golden_snapshot_name" {

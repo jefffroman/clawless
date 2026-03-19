@@ -37,8 +37,7 @@ SLUG="$(slugify "$DISPLAY_NAME")"
 echo "  Client slug: ${SLUG}"
 
 # ── Agent identity ────────────────────────────────────────────────────────────
-ask AGENT_STYLE "Agent style (e.g. Thesa, Max)"
-ask AGENT_NAME  "Agent name" "${AGENT_STYLE}"
+ask AGENT_NAME "Agent name (e.g. Aria, Max)"
 
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
@@ -83,14 +82,12 @@ esac
 CLIENT_JSON="$(jq -cn \
   --arg display_name   "$DISPLAY_NAME" \
   --arg agent_name     "$AGENT_NAME" \
-  --arg agent_style    "$AGENT_STYLE" \
   --arg agent_channel  "$CHANNEL" \
   --argjson channel_config "$CHANNEL_CONFIG" \
   '{
     display_name:   $display_name,
     active:         true,
     agent_name:     $agent_name,
-    agent_style:    $agent_style,
     agent_channel:  $agent_channel,
     channel_config: $channel_config
   }')"

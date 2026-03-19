@@ -96,5 +96,5 @@
   ansible.builtin.wait_for:
     host: "{{ openclaw_gateway_host }}"
     port: "{{ openclaw_gateway_port }}"
-    timeout: 30
+    timeout: 300
     state: started

@@ -29,6 +29,30 @@
         group: ubuntu
         mode: "0750"
 
+    # Install ansible-core so the instance can self-provision via user_data at boot.
+    - name: Install ansible-core
+      ansible.builtin.apt:
+        name: ansible-core
+        state: present
+
+    # Bake current ansible playbooks into the snapshot so instances can self-provision
+    # at boot without needing AWS credentials to sync from S3.
+    - name: Ensure /opt/clawless/ansible directory exists
+      ansible.builtin.file:
+        path: /opt/clawless/ansible
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy ansible playbooks to /opt/clawless/ansible
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../"
+        dest: /opt/clawless/ansible/
+        owner: root
+        group: root
+        mode: preserve
+
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages

@@ -280,6 +280,27 @@ resource "aws_iam_role_policy" "s3_backup" {
   policy = data.aws_iam_policy_document.s3_backup.json
 }
 
+data "aws_iam_policy_document" "s3_ansible" {
+  statement {
+    sid    = "AnsibleRead"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.ansible_s3_bucket}",
+      "arn:aws:s3:::${var.ansible_s3_bucket}/ansible/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "s3_ansible" {
+  name   = "s3-ansible-read"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.s3_ansible.json
+}
+
 data "aws_iam_policy_document" "cloudwatch_backup" {
   statement {
     sid       = "BackupMetrics"
@@ -327,7 +348,6 @@ resource "aws_lightsail_instance" "this" {
   availability_zone = var.availability_zone
   blueprint_id      = var.blueprint_id
   bundle_id         = var.bundle_id
-  key_pair_name     = var.key_pair_name
 
   user_data = <<-EOT
     # Clawless: SSM Hybrid Activation registration
@@ -362,6 +382,7 @@ resource "null_resource" "instance_from_snapshot" {
   triggers = {
     instance_name = local.name_prefix
     snapshot_name = local.snapshot_name
+    region        = data.aws_region.current.name
   }
 
   depends_on = [aws_ssm_activation.this]
@@ -373,12 +394,36 @@ resource "null_resource" "instance_from_snapshot" {
       trap 'rm -f "$_tmpud"' EXIT
       cat > "$_tmpud" <<'USERDATA'
 set -eu
+
+# SSM registration: skipped for resume (registration file present in per-client snapshot)
 if [ ! -s /var/lib/amazon/ssm/registration ]; then
   /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
     -id ${try(aws_ssm_activation.this[0].id, "")} \
     -code ${try(aws_ssm_activation.this[0].activation_code, "")} \
     -region ${data.aws_region.current.name}
   systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
+fi
+
+# Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
+# Client vars are embedded at tofu apply time — no AWS API calls needed from the instance.
+if [ ! -f /var/lib/openclaw/.provisioned ]; then
+  base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
+${base64encode(jsonencode({
+  client_slug             = var.client_slug
+  display_name            = var.display_name
+  openclaw_bedrock_region = data.aws_region.current.name
+  openclaw_backup_bucket  = aws_s3_bucket.workspace_backup.id
+  agent_name              = var.agent_name
+  agent_style             = var.agent_style
+  agent_channel           = var.agent_channel
+  channel_config          = var.channel_config
+}))}
+CLIENTVARS
+  cd /opt/clawless/ansible
+  ansible-playbook playbooks/provision-client.yml \
+    -i localhost, \
+    -c local \
+    -e "@/tmp/clawless-client-vars.json"
 fi
 USERDATA
       aws lightsail create-instances-from-snapshot \
@@ -392,7 +437,21 @@ USERDATA
 
   provisioner "local-exec" {
     when    = destroy
-    command = "aws lightsail delete-instance --instance-name ${self.triggers.instance_name} --force-delete-add-ons 2>/dev/null || true"
+    # delete-instance is async; poll until the instance is gone so a same-name recreate doesn't collide.
+    command = <<-EOT
+      aws lightsail delete-instance \
+        --instance-name ${self.triggers.instance_name} \
+        --force-delete-add-ons \
+        --region ${self.triggers.region} 2>/dev/null || true
+      for i in $(seq 1 60); do
+        aws lightsail get-instance \
+          --instance-name ${self.triggers.instance_name} \
+          --region ${self.triggers.region} \
+          --output text 2>/dev/null || break
+        sleep 5
+      done
+      sleep 10
+    EOT
   }
 }
 
@@ -405,8 +464,9 @@ resource "null_resource" "instance_running" {
   count = var.active ? 1 : 0
 
   triggers = {
-    # Tracks whichever creation resource fired so this re-runs on instance replacement.
-    instance_ref = local.use_snapshot ? local.snapshot_name : try(aws_lightsail_instance.this[0].id, "")
+    # Use the creation resource's ID (not snapshot name) so this re-runs whenever the
+    # instance is replaced, even when recreated from the same snapshot.
+    instance_ref = local.use_snapshot ? try(null_resource.instance_from_snapshot[0].id, "") : try(aws_lightsail_instance.this[0].id, "")
   }
 
   depends_on = [aws_lightsail_instance.this, null_resource.instance_from_snapshot]
@@ -424,39 +484,10 @@ resource "null_resource" "instance_running" {
 }
 
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
-# All setup ports restricted to the provisioner's IP.
-# NOTE: if webhook-based channel integrations are used, port 443 will need
-# to be opened to 0.0.0.0/0 — update provisioner_cidr to ["0.0.0.0/0"]
-# for the 443 rule at that point.
-
-resource "aws_lightsail_instance_public_ports" "this" {
-  count = var.active ? 1 : 0
-
-  depends_on    = [null_resource.instance_running]
-  instance_name = local.name_prefix # Deterministic regardless of creation path
-
-  lifecycle {
-    replace_triggered_by = [null_resource.instance_running]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 22
-    to_port   = 22
-    cidrs     = [var.provisioner_cidr]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 80
-    to_port   = 80
-    cidrs     = [var.provisioner_cidr]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 443
-    to_port   = 443
-    cidrs     = [var.provisioner_cidr]
-  }
-}
+# All inbound ports are closed. No services listen on public interfaces:
+# - Admin access is via SSM Session Manager (no port 22)
+# - OpenClaw gateway binds to loopback only (no port 443)
+# - Channel integrations (Telegram, Discord, Slack) use outbound connections
+#
+# If a webhook-based integration is ever added, open port 443 to 0.0.0.0/0
+# here and add a TLS-terminating reverse proxy + webhook auth on the instance.

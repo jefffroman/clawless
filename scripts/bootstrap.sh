@@ -68,24 +68,13 @@ region  = "${REGION}"
 EOF
 echo "backend.hcl written"
 
-# ── SSH public key ────────────────────────────────────────────────────────────
-hr
-echo "Paste your SSH public key for Ansible provisioning."
-echo "Tip: run 'ssh-add -L' or 'cat ~/.ssh/id_ed25519.pub' to get it."
-echo
-read -rp "Public key: " PUBLIC_KEY
-if [[ "$PUBLIC_KEY" != ssh-* ]]; then
-  echo "Error: key should start with ssh-rsa, ssh-ed25519, etc." >&2
-  exit 1
-fi
-
 # ── Alert email ───────────────────────────────────────────────────────────────
 hr
 ask ALERT_EMAIL "Alert email (Bedrock budget and backup failure notifications)"
 
 cat > "${TOFU_DIR}/terraform.tfvars" <<EOF
-alert_email            = "${ALERT_EMAIL}"
-provisioner_public_key = "${PUBLIC_KEY}"
+alert_email       = "${ALERT_EMAIL}"
+ansible_s3_bucket = "${BUCKET}"
 EOF
 echo "terraform.tfvars written"
 
@@ -108,6 +97,7 @@ hr
 hr
 echo "Bootstrap complete. Next steps:"
 echo
+echo "  ./scripts/bake-snapshot.sh        # build golden image (includes ansible publish)"
 echo "  cd tofu && tofu init -backend-config=backend.hcl"
 echo "  cd tofu && tofu plan"
 echo "  cd tofu && tofu apply"
