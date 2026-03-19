@@ -7,7 +7,7 @@
 #
 # Usage: ./scripts/bake-snapshot.sh [--region <region>]
 #
-# Requires: aws CLI, ansible, tofu, jq, ssh key at ~/.ssh/clawless-provision
+# Requires: aws CLI, ansible, jq
 
 set -euo pipefail
 
@@ -41,6 +41,7 @@ INSTANCE_NAME="clawless-golden-bake-$$"
 SNAPSHOT_NAME="clawless-golden-$(date +%Y%m%d%H%M%S)"
 AZ="${REGION}a"
 SSH_KEY="${HOME}/.ssh/clawless_ansible"
+KEYPAIR_NAME="clawless-ansible"
 
 hr
 log "Baking golden snapshot"
@@ -98,8 +99,20 @@ done
 ACTIVATION_ID=$(echo "$ACTIVATION" | jq -r .ActivationId)
 ACTIVATION_CODE=$(echo "$ACTIVATION" | jq -r .ActivationCode)
 
-# Reuse the existing Lightsail key pair created by tofu for Ansible access.
-KEYPAIR_NAME="clawless-ansible"
+# ── Ensure SSH key pair exists (for Ansible SSH access to bake instance) ─────
+# Generate locally and upload to Lightsail if not already present.
+if [[ ! -f "$SSH_KEY" ]]; then
+  log "Generating SSH key pair at $SSH_KEY..."
+  ssh-keygen -t ed25519 -f "$SSH_KEY" -C "clawless-ansible" -N ""
+fi
+PUBLIC_KEY="$(cat "${SSH_KEY}.pub")"
+if ! aws lightsail get-key-pair --key-pair-name "$KEYPAIR_NAME" --region "$REGION" >/dev/null 2>&1; then
+  log "Uploading key pair '$KEYPAIR_NAME' to Lightsail..."
+  aws lightsail import-key-pair \
+    --key-pair-name "$KEYPAIR_NAME" \
+    --public-key-base64 "$PUBLIC_KEY" \
+    --region "$REGION" >/dev/null
+fi
 
 # ── Create bake instance ──────────────────────────────────────────────────────
 

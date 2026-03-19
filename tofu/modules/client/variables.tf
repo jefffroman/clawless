@@ -59,11 +59,6 @@ variable "channel_config" {
   default     = null
 }
 
-variable "key_pair_name" {
-  description = "Lightsail key pair name for Ansible SSH access."
-  type        = string
-}
-
 variable "active" {
   description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
   type        = bool

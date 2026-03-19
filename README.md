@@ -78,21 +78,6 @@ Verify access:
 aws sts get-caller-identity
 ```
 
-### SSH Key Pair
-
-Clawless uses a dedicated SSH key pair for Ansible to reach instances during the golden snapshot bake. After baking, SSH is no longer needed for day-to-day operations.
-
-Generate a dedicated key pair (do not reuse an existing key):
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/clawless_ansible -C "clawless-ansible" -N ""
-```
-
-The **public key** (`~/.ssh/clawless_ansible.pub`) is uploaded to Lightsail by `bootstrap.sh`.
-The **private key** (`~/.ssh/clawless_ansible`) is referenced in `ansible/ansible.cfg` and used only during `bake-snapshot.sh`.
-
-> **Port 22 is not open on production instances.** The bake script temporarily opens it on the bake instance only, then the golden snapshot has it closed.
-
 ---
 
 ## First-Time Setup
@@ -142,13 +127,14 @@ The golden snapshot pre-installs slow dependencies (Python packages, ansible-cor
 ```
 
 This will:
-1. Spin up a temporary Lightsail instance from the base blueprint
-2. Run `ansible/playbooks/provision-base.yml` via SSH (opens port 22 temporarily)
-3. Stop the instance and create a snapshot named `clawless-golden-<timestamp>`
-4. Write `golden_snapshot_name` to `tofu/terraform.tfvars`
-5. Clean up the temporary instance and SSM activation
+1. Generate an SSH key pair at `~/.ssh/clawless_ansible` if one doesn't exist, and upload it to Lightsail
+2. Spin up a temporary Lightsail instance from the base blueprint
+3. Run `ansible/playbooks/provision-base.yml` via SSH (port 22 open on bake instance only)
+4. Stop the instance and create a snapshot named `clawless-golden-<timestamp>`
+5. Write `golden_snapshot_name` to `tofu/terraform.tfvars`
+6. Clean up the temporary instance and SSM activation
 
-Bake takes approximately 10–15 minutes.
+Bake takes approximately 10–15 minutes. Port 22 is never open on production client instances.
 
 ### 4. Initialize OpenTofu
 
@@ -227,8 +213,7 @@ If you change playbooks and want to push to a running instance without rebaking:
 | Credential | Where stored | Used by |
 |-----------|-------------|---------|
 | AWS access key + secret | `~/.aws/credentials` or env vars | All scripts, `tofu apply` |
-| SSH private key (`~/.ssh/clawless_ansible`) | Local filesystem | `bake-snapshot.sh` (Ansible SSH) |
-| SSH public key | Lightsail key pair (`clawless-ansible`) | Lightsail instance auth during bake |
+| SSH key pair (`~/.ssh/clawless_ansible`) | Local filesystem + Lightsail | `bake-snapshot.sh` only — auto-generated on first bake |
 | OpenClaw gateway token | Instance env file (`/etc/openclaw/env`) | OpenClaw service — generated on first boot, never leaves instance |
 | Channel bot tokens (Telegram, etc.) | SSM `/clawless/clients`, embedded in user-data | `ansible/roles/memory/tasks/main.yml` patch |
 | Bedrock credentials | Per-client IAM role via SSM Hybrid Activation | OpenClaw service (temporary, rotating) |
@@ -240,7 +225,6 @@ If you change playbooks and want to push to a running instance without rebaking:
 tofu/backend.hcl
 tofu/terraform.tfvars
 ~/.ssh/clawless_ansible
-~/.ssh/clawless_ansible.pub
 ```
 
 These are listed in `.gitignore`.

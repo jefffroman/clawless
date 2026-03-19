@@ -19,6 +19,5 @@ module "client" {
   blueprint_id         = var.lightsail_blueprint_id
   golden_snapshot_name = var.golden_snapshot_name
   ansible_s3_bucket    = var.ansible_s3_bucket
-  key_pair_name        = aws_lightsail_key_pair.ansible.name
   tags                 = var.tags
 }
