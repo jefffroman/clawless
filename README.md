@@ -125,7 +125,9 @@ To add additional agents after bootstrap:
 ./scripts/add-agent.sh
 ```
 
-Prompts for: display name, agent style, agent name, channel integration (Telegram, Discord, Slack, or none), and channel-specific credentials (bot tokens, etc.).
+Prompts for: client display name, agent name (required), channel integration (Telegram, Discord, Slack, or other), and channel-specific credentials (bot tokens, etc.).
+
+> Agent style (persona) is intentionally omitted from the setup flow — it is configured per-client directly in the SSM parameter after provisioning.
 
 Client config is stored in SSM Parameter Store at `/clawless/clients` — this is the source of truth for `tofu apply`.
 
