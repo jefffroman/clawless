@@ -383,6 +383,7 @@ resource "null_resource" "instance_from_snapshot" {
   triggers = {
     instance_name = local.name_prefix
     snapshot_name = local.snapshot_name
+    region        = data.aws_region.current.name
   }
 
   depends_on = [aws_ssm_activation.this]
@@ -405,35 +406,25 @@ if [ ! -s /var/lib/amazon/ssm/registration ]; then
 fi
 
 # Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
+# Client vars are embedded at tofu apply time — no AWS API calls needed from the instance.
 if [ ! -f /var/lib/openclaw/.provisioned ]; then
-  aws s3 sync s3://${var.ansible_s3_bucket}/ansible/ /opt/clawless/ansible/ \
-    --region ${data.aws_region.current.name}
-  _tmpvars=$$(mktemp /tmp/clawless-vars-XXXXXX.json)
-  trap 'rm -f "$$_tmpvars"' EXIT
-  aws ssm get-parameter \
-    --name /clawless/clients \
-    --query 'Parameter.Value' \
-    --output text \
-    --region ${data.aws_region.current.name} | \
-  jq \
-    --arg slug '${var.client_slug}' \
-    --arg display_name '${var.display_name}' \
-    --arg bedrock_region '${data.aws_region.current.name}' \
-    --arg backup_bucket '${aws_s3_bucket.workspace_backup.id}' \
-    '{
-      client_slug: $slug,
-      display_name: $display_name,
-      openclaw_bedrock_region: $bedrock_region,
-      openclaw_backup_bucket: $backup_bucket,
-      agent_name: .[$slug].agent_name,
-      agent_style: (.[$slug].agent_style // "assistant"),
-      agent_channel: (.[$slug].agent_channel // ""),
-      channel_config: .[$slug].channel_config
-    }' > "$$_tmpvars"
-  ansible-playbook /opt/clawless/ansible/playbooks/provision-client.yml \
+  base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
+${base64encode(jsonencode({
+  client_slug             = var.client_slug
+  display_name            = var.display_name
+  openclaw_bedrock_region = data.aws_region.current.name
+  openclaw_backup_bucket  = aws_s3_bucket.workspace_backup.id
+  agent_name              = var.agent_name
+  agent_style             = var.agent_style
+  agent_channel           = var.agent_channel
+  channel_config          = var.channel_config
+}))}
+CLIENTVARS
+  cd /opt/clawless/ansible
+  ansible-playbook playbooks/provision-client.yml \
     -i localhost, \
     -c local \
-    -e "@$$_tmpvars"
+    -e "@/tmp/clawless-client-vars.json"
 fi
 USERDATA
       aws lightsail create-instances-from-snapshot \
@@ -447,7 +438,21 @@ USERDATA
 
   provisioner "local-exec" {
     when    = destroy
-    command = "aws lightsail delete-instance --instance-name ${self.triggers.instance_name} --force-delete-add-ons 2>/dev/null || true"
+    # delete-instance is async; poll until the instance is gone so a same-name recreate doesn't collide.
+    command = <<-EOT
+      aws lightsail delete-instance \
+        --instance-name ${self.triggers.instance_name} \
+        --force-delete-add-ons \
+        --region ${self.triggers.region} 2>/dev/null || true
+      for i in $(seq 1 60); do
+        aws lightsail get-instance \
+          --instance-name ${self.triggers.instance_name} \
+          --region ${self.triggers.region} \
+          --output text 2>/dev/null || break
+        sleep 5
+      done
+      sleep 10
+    EOT
   }
 }
 
@@ -460,8 +465,9 @@ resource "null_resource" "instance_running" {
   count = var.active ? 1 : 0
 
   triggers = {
-    # Tracks whichever creation resource fired so this re-runs on instance replacement.
-    instance_ref = local.use_snapshot ? local.snapshot_name : try(aws_lightsail_instance.this[0].id, "")
+    # Use the creation resource's ID (not snapshot name) so this re-runs whenever the
+    # instance is replaced, even when recreated from the same snapshot.
+    instance_ref = local.use_snapshot ? try(null_resource.instance_from_snapshot[0].id, "") : try(aws_lightsail_instance.this[0].id, "")
   }
 
   depends_on = [aws_lightsail_instance.this, null_resource.instance_from_snapshot]
@@ -479,7 +485,7 @@ resource "null_resource" "instance_running" {
 }
 
 # ── Lightsail Firewall ────────────────────────────────────────────────────────
-# All setup ports restricted to the provisioner's IP.
+# Port 22 is intentionally omitted — admin access is via SSM Session Manager.
 # NOTE: if webhook-based channel integrations are used, port 443 will need
 # to be opened to 0.0.0.0/0 — update provisioner_cidr to ["0.0.0.0/0"]
 # for the 443 rule at that point.
@@ -492,13 +498,6 @@ resource "aws_lightsail_instance_public_ports" "this" {
 
   lifecycle {
     replace_triggered_by = [null_resource.instance_running]
-  }
-
-  port_info {
-    protocol  = "tcp"
-    from_port = 22
-    to_port   = 22
-    cidrs     = [var.provisioner_cidr]
   }
 
   port_info {

@@ -86,6 +86,7 @@ ask ALERT_EMAIL "Alert email (Bedrock budget and backup failure notifications)"
 cat > "${TOFU_DIR}/terraform.tfvars" <<EOF
 alert_email            = "${ALERT_EMAIL}"
 provisioner_public_key = "${PUBLIC_KEY}"
+ansible_s3_bucket      = "${BUCKET}"
 EOF
 echo "terraform.tfvars written"
 
@@ -108,6 +109,7 @@ hr
 hr
 echo "Bootstrap complete. Next steps:"
 echo
+echo "  ./scripts/bake-snapshot.sh        # build golden image (includes ansible publish)"
 echo "  cd tofu && tofu init -backend-config=backend.hcl"
 echo "  cd tofu && tofu plan"
 echo "  cd tofu && tofu apply"

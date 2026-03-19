@@ -31,8 +31,32 @@ variable "golden_snapshot_name" {
 }
 
 variable "ansible_s3_bucket" {
-  description = "S3 bucket name where ansible playbooks are published. Instances sync from here at boot before self-provisioning."
+  description = "S3 bucket name where ansible playbooks are published. Used for IAM policy (SSM RunCommand updates to running instances)."
   type        = string
+}
+
+variable "agent_name" {
+  description = "Display name of the agent. Embedded in user-data at apply time."
+  type        = string
+  default     = ""
+}
+
+variable "agent_style" {
+  description = "Agent style (e.g. 'assistant'). Embedded in user-data at apply time."
+  type        = string
+  default     = "assistant"
+}
+
+variable "agent_channel" {
+  description = "Channel integration type (e.g. 'telegram'). Embedded in user-data at apply time."
+  type        = string
+  default     = ""
+}
+
+variable "channel_config" {
+  description = "Channel-specific config map. Embedded in user-data at apply time. Null if no channel configured."
+  type        = any
+  default     = null
 }
 
 variable "key_pair_name" {
