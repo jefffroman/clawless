@@ -41,6 +41,7 @@ aws ecr get-login-password --region "$REGION" \
 # Build (context is repo root so Dockerfile can COPY from tofu/ and lambda/)
 docker build \
   --platform linux/amd64 \
+  --provenance=false \
   -f "$REPO_ROOT/lambda/Dockerfile" \
   -t "$IMAGE_URI" \
   "$REPO_ROOT"
