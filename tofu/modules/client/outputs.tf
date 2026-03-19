@@ -1,8 +1,3 @@
-output "instance_public_ip" {
-  description = "Public IP address of the Lightsail instance. Null when inactive or created from snapshot (fetch via AWS CLI if needed)."
-  value       = var.active && !local.use_snapshot ? one(aws_lightsail_instance.this[*].public_ip_address) : null
-}
-
 output "instance_name" {
   description = "Lightsail instance name. Null when inactive."
   value       = var.active ? local.name_prefix : null
