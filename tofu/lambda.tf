@@ -136,6 +136,7 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
 resource "aws_lambda_function" "lifecycle" {
   function_name = "clawless-lifecycle"
   role          = aws_iam_role.lifecycle_lambda.arn
+  architectures = ["arm64"]
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lifecycle.repository_url}:latest"
   timeout       = 900 # 15 min — tofu apply for a client takes 1-3 min

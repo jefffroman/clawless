@@ -6,7 +6,7 @@ RUN dnf install -y git unzip && dnf clean all
 
 # Install OpenTofu
 RUN curl -fsSL \
-    "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip" \
+    "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_arm64.zip" \
     -o /tmp/tofu.zip \
     && unzip /tmp/tofu.zip tofu -d /usr/local/bin/ \
     && rm /tmp/tofu.zip
