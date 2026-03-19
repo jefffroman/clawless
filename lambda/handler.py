@@ -26,8 +26,7 @@ s3 = boto3.client("s3")
 STATE_BUCKET = os.environ["STATE_BUCKET"]
 REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
-PLUGIN_CACHE_SRC = "/opt/tofu-plugin-cache"
-PLUGIN_CACHE_DST = "/tmp/tofu-plugin-cache"
+PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 
 def lambda_handler(event, context):
@@ -35,10 +34,6 @@ def lambda_handler(event, context):
 
     version = ssm.get_parameter(Name="/clawless/version")["Parameter"]["Value"]
     print(f"Clawless version: {version}")
-
-    # Provider cache must be in a writable location (/tmp); copy once per container.
-    if not os.path.exists(PLUGIN_CACHE_DST):
-        shutil.copytree(PLUGIN_CACHE_SRC, PLUGIN_CACHE_DST)
 
     work_dir = tempfile.mkdtemp(dir="/tmp")
     try:
@@ -69,7 +64,7 @@ def _apply(work_dir, version):
         os.path.join(tofu_dir, "terraform.tfvars"),
     )
 
-    env = {**os.environ, "TF_PLUGIN_CACHE_DIR": PLUGIN_CACHE_DST}
+    env = {**os.environ, "TF_PLUGIN_CACHE_DIR": PLUGIN_CACHE_DIR}
 
     _run(
         ["tofu", "init", "-backend-config=backend.hcl", "-input=false"],
