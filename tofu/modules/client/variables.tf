@@ -30,6 +30,11 @@ variable "golden_snapshot_name" {
   default     = ""
 }
 
+variable "ansible_s3_bucket" {
+  description = "S3 bucket name where ansible playbooks are published. Instances sync from here at boot before self-provisioning."
+  type        = string
+}
+
 variable "key_pair_name" {
   description = "Lightsail key pair name for Ansible SSH access."
   type        = string

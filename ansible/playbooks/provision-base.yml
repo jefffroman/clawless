@@ -29,6 +29,12 @@
         group: ubuntu
         mode: "0750"
 
+    # Install ansible-core so the instance can self-provision via user_data at boot.
+    - name: Install ansible-core
+      ansible.builtin.apt:
+        name: ansible-core
+        state: present
+
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages

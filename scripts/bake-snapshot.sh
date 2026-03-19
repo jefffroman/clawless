@@ -62,6 +62,13 @@ if [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
   BUNDLE_ID="${_bd:-$BUNDLE_ID}"
 fi
 
+# ── Publish ansible to S3 ─────────────────────────────────────────────────────
+# Instances pull playbooks from S3 at boot; publish before baking so any new
+# clients created from this snapshot pick up the current playbooks immediately.
+
+log "Publishing ansible to S3..."
+"$REPO_ROOT/scripts/publish-ansible.sh" --region "$REGION"
+
 # ── Temporary SSM activation for the bake instance ───────────────────────────
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

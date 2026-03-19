@@ -44,6 +44,11 @@ variable "bedrock_monthly_budget_usd" {
   default     = 50
 }
 
+variable "ansible_s3_bucket" {
+  description = "S3 bucket name where the ansible directory is published by publish-ansible.sh. Instances sync playbooks from here at boot. Typically the tofu state bucket."
+  type        = string
+}
+
 variable "golden_snapshot_name" {
   description = "Lightsail snapshot name to use for new client instances instead of the blueprint. Set by bake-snapshot.sh after a successful golden bake. Empty string means fall back to blueprint_id."
   type        = string

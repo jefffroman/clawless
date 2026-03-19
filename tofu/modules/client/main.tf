@@ -280,6 +280,27 @@ resource "aws_iam_role_policy" "s3_backup" {
   policy = data.aws_iam_policy_document.s3_backup.json
 }
 
+data "aws_iam_policy_document" "s3_ansible" {
+  statement {
+    sid    = "AnsibleRead"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.ansible_s3_bucket}",
+      "arn:aws:s3:::${var.ansible_s3_bucket}/ansible/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "s3_ansible" {
+  name   = "s3-ansible-read"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.s3_ansible.json
+}
+
 data "aws_iam_policy_document" "cloudwatch_backup" {
   statement {
     sid       = "BackupMetrics"
@@ -373,12 +394,46 @@ resource "null_resource" "instance_from_snapshot" {
       trap 'rm -f "$_tmpud"' EXIT
       cat > "$_tmpud" <<'USERDATA'
 set -eu
+
+# SSM registration: skipped for resume (registration file present in per-client snapshot)
 if [ ! -s /var/lib/amazon/ssm/registration ]; then
   /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
     -id ${try(aws_ssm_activation.this[0].id, "")} \
     -code ${try(aws_ssm_activation.this[0].activation_code, "")} \
     -region ${data.aws_region.current.name}
   systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
+fi
+
+# Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
+if [ ! -f /var/lib/openclaw/.provisioned ]; then
+  aws s3 sync s3://${var.ansible_s3_bucket}/ansible/ /opt/clawless/ansible/ \
+    --region ${data.aws_region.current.name}
+  _tmpvars=$$(mktemp /tmp/clawless-vars-XXXXXX.json)
+  trap 'rm -f "$$_tmpvars"' EXIT
+  aws ssm get-parameter \
+    --name /clawless/clients \
+    --query 'Parameter.Value' \
+    --output text \
+    --region ${data.aws_region.current.name} | \
+  jq \
+    --arg slug '${var.client_slug}' \
+    --arg display_name '${var.display_name}' \
+    --arg bedrock_region '${data.aws_region.current.name}' \
+    --arg backup_bucket '${aws_s3_bucket.workspace_backup.id}' \
+    '{
+      client_slug: $slug,
+      display_name: $display_name,
+      openclaw_bedrock_region: $bedrock_region,
+      openclaw_backup_bucket: $backup_bucket,
+      agent_name: .[$slug].agent_name,
+      agent_style: (.[$slug].agent_style // "assistant"),
+      agent_channel: (.[$slug].agent_channel // ""),
+      channel_config: .[$slug].channel_config
+    }' > "$$_tmpvars"
+  ansible-playbook /opt/clawless/ansible/playbooks/provision-client.yml \
+    -i localhost, \
+    -c local \
+    -e "@$$_tmpvars"
 fi
 USERDATA
       aws lightsail create-instances-from-snapshot \
