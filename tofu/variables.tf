@@ -44,6 +44,12 @@ variable "golden_snapshot_name" {
   default     = ""
 }
 
+variable "replica_region" {
+  description = "AWS region for the S3 backup replica bucket. Should be geographically separate from aws_region."
+  type        = string
+  default     = "us-east-2"
+}
+
 variable "tags" {
   description = "Tags applied to all taggable resources."
   type        = map(string)

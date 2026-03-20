@@ -34,60 +34,6 @@ data "external" "client_snapshot" {
   ]
 }
 
-# ── S3 Workspace Backup (primary region) ──────────────────────────────────────
-
-resource "aws_s3_bucket" "workspace_backup" {
-  bucket = "${local.name_prefix}-backup-${data.aws_caller_identity.current.account_id}"
-  tags   = local.tags
-
-}
-
-resource "aws_s3_bucket_versioning" "workspace_backup" {
-  bucket = aws_s3_bucket.workspace_backup.id
-  versioning_configuration {
-    status = "Enabled" # Required for CRR source
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "workspace_backup" {
-  bucket = aws_s3_bucket.workspace_backup.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "aws:kms"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "workspace_backup" {
-  bucket                  = aws_s3_bucket.workspace_backup.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup" {
-  bucket = aws_s3_bucket.workspace_backup.id
-
-  rule {
-    id     = "expire-old-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days           = 30
-      newer_noncurrent_versions = 7
-    }
-
-    expiration {
-      expired_object_delete_marker = true
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.workspace_backup]
-}
-
 # ── IAM Role (SSM trust) ──────────────────────────────────────────────────────
 # Lightsail has no native instance profile support, so we use SSM Hybrid
 # Activation. The instance registers with SSM on first boot via user_data;
@@ -116,18 +62,27 @@ data "aws_iam_policy_document" "bedrock" {
 
 data "aws_iam_policy_document" "s3_backup" {
   statement {
-    sid    = "WorkspaceBackup"
+    sid    = "WorkspaceBackupObjects"
     effect = "Allow"
     actions = [
       "s3:PutObject",
       "s3:GetObject",
       "s3:DeleteObject",
-      "s3:ListBucket",
     ]
-    resources = [
-      aws_s3_bucket.workspace_backup.arn,
-      "${aws_s3_bucket.workspace_backup.arn}/*",
-    ]
+    resources = ["arn:aws:s3:::${var.backup_bucket}/clients/${var.client_slug}/*"]
+  }
+
+  statement {
+    sid       = "WorkspaceBackupList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.backup_bucket}"]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["clients/${var.client_slug}/*"]
+    }
   }
 }
 
@@ -286,7 +241,7 @@ ${base64encode(jsonencode({
   client_slug             = var.client_slug
   display_name            = var.display_name
   openclaw_bedrock_region = data.aws_region.current.name
-  openclaw_backup_bucket  = aws_s3_bucket.workspace_backup.id
+  openclaw_backup_bucket  = var.backup_bucket
   agent_name              = var.agent_name
   agent_style             = var.agent_style
   agent_channel           = var.agent_channel

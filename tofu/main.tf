@@ -13,6 +13,7 @@ module "client" {
   bundle_id            = var.lightsail_bundle_id
   blueprint_id         = var.lightsail_blueprint_id
   golden_snapshot_name = var.golden_snapshot_name
+  backup_bucket        = aws_s3_bucket.backups.id
   ansible_s3_bucket    = var.ansible_s3_bucket
   tags                 = var.tags
 }
