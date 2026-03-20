@@ -64,6 +64,12 @@ variable "channel_config" {
   default     = null
 }
 
+variable "bedrock_model" {
+  description = "OpenClaw model string for this client (e.g. bedrock/us.amazon.nova-pro-v1:0)."
+  type        = string
+  default     = "bedrock/us.amazon.nova-lite-v1:0"
+}
+
 variable "is_new" {
   description = "True for clients being provisioned for the first time. Uses golden snapshot (or blueprint) instead of the pause snapshot. False (default) assumes a pause snapshot exists and errors if it does not."
   type        = bool

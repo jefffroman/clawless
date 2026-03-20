@@ -13,6 +13,9 @@ CONFIG_PATH = os.environ.get(
 # If either is absent the channels block is left untouched.
 CHANNEL = os.environ.get("OPENCLAW_CHANNEL", "").strip().lower()
 CHANNEL_CONFIG = json.loads(os.environ.get("OPENCLAW_CHANNEL_CONFIG", "null") or "null")
+# Full OpenClaw model string (e.g. "bedrock/us.amazon.nova-micro-v1:0").
+# If absent the existing model config is left untouched.
+MODEL = os.environ.get("OPENCLAW_MODEL", "").strip()
 
 MEMORY_SEARCH_BLOCK = {
     "memorySearch": {
@@ -37,6 +40,10 @@ def patch_config():
     print(f"Backed up to {backup}")
 
     config.setdefault("agents", {}).setdefault("defaults", {}).update(MEMORY_SEARCH_BLOCK)
+
+    if MODEL:
+        config.setdefault("agents", {}).setdefault("defaults", {}).setdefault("model", {})["primary"] = MODEL
+        print(f"agents.defaults.model.primary patched to {MODEL}")
 
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields

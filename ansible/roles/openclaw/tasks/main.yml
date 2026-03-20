@@ -37,6 +37,32 @@
     modification_time: preserve
     access_time: preserve
 
+# ── AWS credential setup ──────────────────────────────────────────────────────
+# The Lightsail IMDS provides a Lightsail-native IAM role (different AWS
+# account) that has no access to our Bedrock or S3 resources. The SSM State
+# Manager credential-refresh document (runs every 45 min, immediately on new
+# instances) writes a fresh 1-hour STS session from the correct per-client
+# IAM role to /home/ubuntu/.aws/credentials as the [default] profile.
+# AWS_EC2_METADATA_DISABLED prevents the SDK from falling back to IMDS.
+
+- name: Ensure AWS credentials directory exists
+  ansible.builtin.file:
+    path: /home/ubuntu/.aws
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0700"
+
+- name: Create credentials placeholder (populated by SSM State Manager)
+  ansible.builtin.file:
+    path: /home/ubuntu/.aws/credentials
+    state: touch
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+
 # Use lineinfile (not template) so the OPENCLAW_GATEWAY_TOKEN line written below
 # is never clobbered when the region changes on re-runs.
 - name: Set AWS_DEFAULT_REGION in env file
@@ -44,6 +70,20 @@
     path: "{{ openclaw_env_file }}"
     regexp: "^AWS_DEFAULT_REGION="
     line: "AWS_DEFAULT_REGION={{ openclaw_bedrock_region }}"
+  notify: Restart openclaw
+
+- name: Set AWS_SHARED_CREDENTIALS_FILE in env file
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_SHARED_CREDENTIALS_FILE="
+    line: "AWS_SHARED_CREDENTIALS_FILE=/home/ubuntu/.aws/credentials"
+  notify: Restart openclaw
+
+- name: Disable IMDS fallback in env file
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_EC2_METADATA_DISABLED="
+    line: "AWS_EC2_METADATA_DISABLED=true"
   notify: Restart openclaw
 
 # The gateway token is generated on the remote host and written directly to

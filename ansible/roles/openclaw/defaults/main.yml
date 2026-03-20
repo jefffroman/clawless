@@ -1,5 +1,5 @@
 ---
-openclaw_default_model:  "amazon.nova-pro-v1:0"
+openclaw_default_model:  "amazon.nova-lite-v1:0"
 openclaw_bedrock_region: "us-east-1"
 openclaw_gateway_host:   "127.0.0.1"
 openclaw_gateway_port:   18789

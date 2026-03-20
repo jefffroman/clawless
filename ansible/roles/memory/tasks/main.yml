@@ -74,7 +74,7 @@
     mode: "0640"
     force: false
 
-- name: Patch OpenClaw config for memory search
+- name: Patch OpenClaw config for memory search and model
   ansible.builtin.command:
     cmd: >
       {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
@@ -83,6 +83,7 @@
     chdir: "{{ openclaw_workspace_dir }}"
   environment:
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
+    OPENCLAW_MODEL: "{{ bedrock_model | default('bedrock/us.amazon.nova-lite-v1:0') }}"
   become_user: "{{ openclaw_user }}"
   notify: Restart openclaw
 
