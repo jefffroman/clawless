@@ -12,8 +12,10 @@ Handles all lifecycle transitions:
   - Resume client (active: true)  — deletes pause snapshot after tofu restores it
 """
 
+import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,14 +26,12 @@ from botocore.exceptions import ClientError
 
 ssm = boto3.client("ssm")
 s3 = boto3.client("s3")
-sns = boto3.client("sns")
 lightsail = boto3.client("lightsail")
 sts = boto3.client("sts")
 
 STATE_BUCKET = os.environ["STATE_BUCKET"]
 REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
-ALERTS_TOPIC_ARN = os.environ["ALERTS_TOPIC_ARN"]
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 
@@ -53,7 +53,7 @@ def lambda_handler(event, context):
 
     work_dir = tempfile.mkdtemp(dir="/tmp")
     try:
-        _apply(work_dir, version)
+        _apply(work_dir, version, clients)
     except Exception as e:
         print(f"ERROR: {e}")
         raise
@@ -65,9 +65,6 @@ def lambda_handler(event, context):
     for slug, cfg in clients.items():
         if cfg.get("active", True):
             _maybe_delete_pause_snapshot(slug)
-
-    # Notify if any client backup buckets are orphaned (client was removed).
-    _notify_orphaned_buckets(clients)
 
     return {"status": "success"}
 
@@ -138,40 +135,82 @@ def _maybe_delete_pause_snapshot(slug):
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
 
 
-def _notify_orphaned_buckets(clients):
-    """Publish an SNS alert if any backup buckets exist with no matching client in SSM."""
+def backup_handler(event, context):
+    """Nightly: copy each active client's backup bucket into the shared archive."""
+    print(f"Event: {json.dumps(event)}")
+
+    clients = json.loads(
+        ssm.get_parameter(Name="/clawless/clients")["Parameter"]["Value"]
+    )
     account_id = sts.get_caller_identity()["Account"]
-    suffix = f"-backup-{account_id}"
-    active_slugs = set(clients.keys())
+    dst_bucket = f"clawless-backups-{account_id}"
 
-    all_buckets = s3.list_buckets()["Buckets"]
-    orphaned = [
-        b["Name"] for b in all_buckets
-        if b["Name"].startswith("clawless-") and b["Name"].endswith(suffix)
-        and b["Name"][len("clawless-"):-len(suffix)] not in active_slugs
-    ]
+    for slug, cfg in clients.items():
+        if not cfg.get("active", True):
+            print(f"[backup:{slug}] paused — skipping")
+            continue
+        src_bucket = f"clawless-{slug}-backup-{account_id}"
+        _copy_s3_prefix(src_bucket, dst_bucket, f"nightly/{slug}/", f"backup:{slug}")
 
-    if not orphaned:
-        return
+    return {"status": "success"}
 
-    slugs = [b[len("clawless-"):-len(suffix)] for b in orphaned]
-    message = (
-        "One or more Clawless clients were removed. "
-        "Their S3 backup buckets were not deleted and require manual cleanup.\n\n"
-        "Orphaned buckets:\n" +
-        "".join(f"  - {b}\n" for b in orphaned) +
-        "\nAlso check replica buckets in the backup region.\n"
-        "Delete with: aws s3 rb s3://<bucket> --force"
+
+def _backup_client_to_shared(slug, account_id):
+    """Copy all objects from the client backup bucket into the shared archive bucket."""
+    src_bucket = f"clawless-{slug}-backup-{account_id}"
+    dst_bucket = f"clawless-backups-{account_id}"
+    prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
+    _copy_s3_prefix(src_bucket, dst_bucket, prefix, f"remove:{slug}")
+
+
+def _copy_s3_prefix(src_bucket, dst_bucket, dst_prefix, label):
+    """Copy all objects from src_bucket into dst_bucket under dst_prefix."""
+    print(f"[{label}] {src_bucket} → {dst_bucket}/{dst_prefix}")
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        count = 0
+        for page in paginator.paginate(Bucket=src_bucket):
+            for obj in page.get("Contents", []):
+                s3.copy_object(
+                    CopySource={"Bucket": src_bucket, "Key": obj["Key"]},
+                    Bucket=dst_bucket,
+                    Key=dst_prefix + obj["Key"],
+                )
+                count += 1
+        print(f"[{label}] copied {count} objects")
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchBucket":
+            print(f"[{label}] WARNING: {src_bucket} not found — skipping")
+        else:
+            raise
+
+
+def _patch_force_destroy(tofu_dir):
+    """Add force_destroy = true to all aws_s3_bucket resources in the client module."""
+    path = os.path.join(tofu_dir, "modules", "client", "main.tf")
+    with open(path) as f:
+        content = f.read()
+    patched = re.sub(
+        r'(resource "aws_s3_bucket" "[^"]*" \{)',
+        r'\1\n  force_destroy = true',
+        content,
     )
-    sns.publish(
-        TopicArn=ALERTS_TOPIC_ARN,
-        Subject=f"Clawless: S3 cleanup needed for removed client(s): {', '.join(slugs)}",
-        Message=message,
-    )
-    print(f"SNS alert sent for orphaned buckets: {orphaned}")
+    with open(path, "w") as f:
+        f.write(patched)
+    print(f"[remove] patched force_destroy=true into client module")
 
 
-def _apply(work_dir, version):
+def _parse_state_slugs(output):
+    """Extract client slugs from `tofu state list` output."""
+    slugs = set()
+    for line in output.splitlines():
+        if line.startswith('module.client["'):
+            slug = line.split('"')[1]
+            slugs.add(slug)
+    return slugs
+
+
+def _apply(work_dir, version, clients):
     # Clone repo at pinned version
     _run(["git", "clone", "--depth=1", "--branch", version, REPO_URL, work_dir])
 
@@ -201,11 +240,29 @@ def _apply(work_dir, version):
         cwd=tofu_dir,
         env=env,
     )
-    _run(
-        ["tofu", "apply", "-auto-approve", "-input=false", "-target=module.client"],
-        cwd=tofu_dir,
-        env=env,
-    )
+
+    # Detect removed clients (present in state but absent from SSM)
+    state_result = _run(["tofu", "state", "list"], cwd=tofu_dir, env=env)
+    state_slugs = _parse_state_slugs(state_result.stdout)
+    ssm_slugs = set(clients.keys())
+    removed_slugs = state_slugs - ssm_slugs
+
+    if removed_slugs:
+        print(f"Detected removed clients: {sorted(removed_slugs)}")
+        account_id = sts.get_caller_identity()["Account"]
+        for slug in sorted(removed_slugs):
+            _backup_client_to_shared(slug, account_id)
+        _patch_force_destroy(tofu_dir)
+
+    # Apply each client instance individually to reduce error surface
+    all_slugs = ssm_slugs | removed_slugs
+    for slug in sorted(all_slugs):
+        _run(
+            ["tofu", "apply", "-auto-approve", "-input=false",
+             f"-target=module.client[\"{slug}\"]"],
+            cwd=tofu_dir,
+            env=env,
+        )
 
 
 def _run(cmd, **kwargs):

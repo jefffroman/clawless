@@ -155,9 +155,8 @@ resource "aws_lambda_function" "lifecycle" {
 
   environment {
     variables = {
-      STATE_BUCKET      = local.state_bucket
-      REPO_URL          = "https://github.com/jefffroman/clawless"
-      ALERTS_TOPIC_ARN  = aws_sns_topic.alerts.arn
+      STATE_BUCKET = local.state_bucket
+      REPO_URL     = "https://github.com/jefffroman/clawless"
     }
   }
 
@@ -170,6 +169,53 @@ resource "aws_lambda_function" "lifecycle" {
   depends_on = [null_resource.lambda_image]
 
   tags = var.tags
+}
+
+# ── Backup Lambda ─────────────────────────────────────────────────────────────
+# Same image as lifecycle Lambda; uses the backup_handler entry point.
+
+resource "aws_lambda_function" "backup" {
+  function_name = "clawless-backup"
+  role          = aws_iam_role.lifecycle_lambda.arn
+  architectures = ["arm64"]
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lifecycle.repository_url}:latest"
+  timeout       = 300
+  memory_size   = 512
+
+  image_config {
+    command = ["handler.backup_handler"]
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  depends_on = [null_resource.lambda_image]
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_rule" "nightly_backup" {
+  name                = "clawless-nightly-backup"
+  description         = "Copy each active client's backup bucket to the shared archive"
+  schedule_expression = "cron(0 7 * * ? *)" # 3 AM EDT (UTC-4)
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "backup_lambda" {
+  rule      = aws_cloudwatch_event_rule.nightly_backup.name
+  target_id = "clawless-backup"
+  arn       = aws_lambda_function.backup.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_backup" {
+  statement_id  = "AllowEventBridgeBackup"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.backup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.nightly_backup.arn
 }
 
 # ── EventBridge Rule ──────────────────────────────────────────────────────────

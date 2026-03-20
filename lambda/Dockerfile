@@ -2,7 +2,7 @@ FROM public.ecr.aws/lambda/python:3.12
 
 ARG TOFU_VERSION=1.10.0
 
-RUN dnf install -y git unzip && dnf clean all
+RUN dnf install -y git unzip awscli && dnf clean all
 
 # Install OpenTofu
 RUN curl -fsSL \

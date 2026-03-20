@@ -20,9 +20,3 @@ terraform {
 provider "aws" {
   region = var.aws_region
 }
-
-# Secondary region for S3 cross-region replication backup.
-provider "aws" {
-  alias  = "backup"
-  region = var.backup_region
-}

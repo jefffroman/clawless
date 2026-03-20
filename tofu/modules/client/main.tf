@@ -1,8 +1,7 @@
 terraform {
   required_providers {
     aws = {
-      source                = "hashicorp/aws"
-      configuration_aliases = [aws.backup]
+      source = "hashicorp/aws"
     }
   }
 }
@@ -83,127 +82,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup" {
 
     expiration {
       expired_object_delete_marker = true
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.workspace_backup]
-}
-
-# ── S3 Replica Bucket (backup region) ────────────────────────────────────────
-
-resource "aws_s3_bucket" "workspace_backup_replica" {
-  provider = aws.backup
-  bucket   = "${local.name_prefix}-backup-replica-${data.aws_caller_identity.current.account_id}"
-  tags     = local.tags
-
-}
-
-resource "aws_s3_bucket_versioning" "workspace_backup_replica" {
-  provider = aws.backup
-  bucket   = aws_s3_bucket.workspace_backup_replica.id
-  versioning_configuration {
-    status = "Enabled" # Required for CRR destination
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "workspace_backup_replica" {
-  provider = aws.backup
-  bucket   = aws_s3_bucket.workspace_backup_replica.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "aws:kms"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "workspace_backup_replica" {
-  provider                = aws.backup
-  bucket                  = aws_s3_bucket.workspace_backup_replica.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup_replica" {
-  provider = aws.backup
-  bucket   = aws_s3_bucket.workspace_backup_replica.id
-
-  rule {
-    id     = "expire-old-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days           = 30
-      newer_noncurrent_versions = 7
-    }
-
-    expiration {
-      expired_object_delete_marker = true
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.workspace_backup_replica]
-}
-
-# ── CRR Replication Role ──────────────────────────────────────────────────────
-
-data "aws_iam_policy_document" "replication_assume" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["s3.amazonaws.com"]
-    }
-  }
-}
-
-data "aws_iam_policy_document" "replication" {
-  statement {
-    effect    = "Allow"
-    actions   = ["s3:GetReplicationConfiguration", "s3:ListBucket"]
-    resources = [aws_s3_bucket.workspace_backup.arn]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectVersionTagging"]
-    resources = ["${aws_s3_bucket.workspace_backup.arn}/*"]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"]
-    resources = ["${aws_s3_bucket.workspace_backup_replica.arn}/*"]
-  }
-}
-
-resource "aws_iam_role" "replication" {
-  name               = "${local.name_prefix}-s3-replication"
-  assume_role_policy = data.aws_iam_policy_document.replication_assume.json
-  tags               = local.tags
-}
-
-resource "aws_iam_role_policy" "replication" {
-  name   = "s3-replication"
-  role   = aws_iam_role.replication.id
-  policy = data.aws_iam_policy_document.replication.json
-}
-
-resource "aws_s3_bucket_replication_configuration" "workspace_backup" {
-  bucket = aws_s3_bucket.workspace_backup.id
-  role   = aws_iam_role.replication.arn
-
-  rule {
-    id     = "replicate-workspace"
-    status = "Enabled"
-
-    destination {
-      bucket        = aws_s3_bucket.workspace_backup_replica.arn
-      storage_class = "STANDARD_IA" # Cheaper for replica we hope never to need
     }
   }
 
