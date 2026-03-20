@@ -14,7 +14,7 @@
       set -euo pipefail
       if aws s3 sync \
         "{{ openclaw_workspace_dir }}/" \
-        "s3://{{ openclaw_backup_bucket }}/workspace/" \
+        "s3://{{ openclaw_backup_bucket }}/clients/{{ client_slug }}/workspace/" \
         --delete \
         --no-progress; then
         aws cloudwatch put-metric-data \

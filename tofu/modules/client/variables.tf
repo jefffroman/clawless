@@ -30,6 +30,11 @@ variable "golden_snapshot_name" {
   default     = ""
 }
 
+variable "backup_bucket" {
+  description = "Shared S3 backup bucket name. Client workspace is synced to clients/{slug}/workspace/ within this bucket."
+  type        = string
+}
+
 variable "ansible_s3_bucket" {
   description = "S3 bucket name where ansible playbooks are published. Used for IAM policy (SSM RunCommand updates to running instances)."
   type        = string
