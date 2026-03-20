@@ -17,6 +17,7 @@ trap 'rm -f "$RESPONSE_FILE"' EXIT
 aws lambda invoke \
   --function-name clawless-lifecycle \
   --payload '{"source":"manual"}' \
+  --cli-binary-format raw-in-base64-out \
   --region "${REGION}" \
   "${RESPONSE_FILE}" >/dev/null
 
