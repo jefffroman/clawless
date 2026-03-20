@@ -39,6 +39,19 @@ data "aws_iam_policy_document" "ssm_assume" {
       identifiers = ["ssm.amazonaws.com"]
     }
   }
+
+  # Allow the role to assume itself so the SSM credential-refresh document
+  # can call sts:AssumeRole from the managed instance context and write a
+  # fresh 1-hour session to /home/ubuntu/.aws/credentials.
+  statement {
+    sid     = "SelfAssume"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-ssm"]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "bedrock" {
@@ -141,6 +154,21 @@ resource "aws_iam_role_policy" "cloudwatch_backup" {
   policy = data.aws_iam_policy_document.cloudwatch_backup.json
 }
 
+data "aws_iam_policy_document" "self_assume" {
+  statement {
+    sid       = "SelfAssume"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-ssm"]
+  }
+}
+
+resource "aws_iam_role_policy" "self_assume" {
+  name   = "sts-self-assume"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.self_assume.json
+}
+
 # ── SSM Activation ────────────────────────────────────────────────────────────
 
 resource "aws_ssm_activation" "this" {
@@ -231,6 +259,7 @@ ${base64encode(jsonencode({
   display_name            = var.display_name
   openclaw_bedrock_region = data.aws_region.current.name
   openclaw_backup_bucket  = var.backup_bucket
+  bedrock_model           = var.bedrock_model
   agent_name              = var.agent_name
   agent_style             = var.agent_style
   agent_channel           = var.agent_channel

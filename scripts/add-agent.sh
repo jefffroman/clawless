@@ -50,7 +50,7 @@ case "$CHANNEL" in
     ask BOT_TOKEN "Bot token"
     CHANNEL_CONFIG="$(jq -cn \
       --arg token "$BOT_TOKEN" \
-      '{"enabled": true, "botToken": $token, "dmPolicy": "pairing"}')"
+      '{"enabled": true, "botToken": $token, "dmPolicy": "open"}')"
     ;;
   discord)
     echo "Create a bot at discord.com/developers and copy the bot token."
