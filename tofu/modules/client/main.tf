@@ -77,7 +77,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = 7
+      noncurrent_days           = 30
+      newer_noncurrent_versions = 7
     }
 
     expiration {
@@ -135,7 +136,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "workspace_backup_replica" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = 7
+      noncurrent_days           = 30
+      newer_noncurrent_versions = 7
     }
 
     expiration {
