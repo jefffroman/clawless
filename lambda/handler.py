@@ -135,26 +135,6 @@ def _maybe_delete_pause_snapshot(slug):
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
 
 
-def backup_handler(event, context):
-    """Nightly: copy each active client's backup bucket into the shared archive."""
-    print(f"Event: {json.dumps(event)}")
-
-    clients = json.loads(
-        ssm.get_parameter(Name="/clawless/clients")["Parameter"]["Value"]
-    )
-    account_id = sts.get_caller_identity()["Account"]
-    dst_bucket = f"clawless-backups-{account_id}"
-
-    for slug, cfg in clients.items():
-        if not cfg.get("active", True):
-            print(f"[backup:{slug}] paused — skipping")
-            continue
-        src_bucket = f"clawless-{slug}-backup-{account_id}"
-        _copy_s3_prefix(src_bucket, dst_bucket, f"nightly/{slug}/", f"backup:{slug}")
-
-    return {"status": "success"}
-
-
 def _backup_client_to_shared(slug, account_id):
     """Copy all objects from the client backup bucket into the shared archive bucket."""
     src_bucket = f"clawless-{slug}-backup-{account_id}"
@@ -254,11 +234,17 @@ def _apply(work_dir, version, clients):
             _backup_client_to_shared(slug, account_id)
         _patch_force_destroy(tofu_dir)
 
+    # Clients in SSM but not yet in state are brand new — pass them as new_client_slugs
+    # so the module uses the golden snapshot instead of expecting a pause snapshot.
+    new_slugs = ssm_slugs - state_slugs
+    new_slugs_var = f"-var=new_client_slugs={json.dumps(sorted(new_slugs))}"
+
     # Apply each client instance individually to reduce error surface
     all_slugs = ssm_slugs | removed_slugs
     for slug in sorted(all_slugs):
         _run(
             ["tofu", "apply", "-auto-approve", "-input=false",
+             new_slugs_var,
              f"-target=module.client[\"{slug}\"]"],
             cwd=tofu_dir,
             env=env,

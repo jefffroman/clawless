@@ -42,7 +42,7 @@ ask AGENT_NAME "Agent name (e.g. Aria, Max)"
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
 ask CHANNEL "Channel (telegram / discord / slack / other)" "telegram"
-CHANNEL="${CHANNEL,,}"  # lowercase
+CHANNEL="$(echo "$CHANNEL" | tr '[:upper:]' '[:lower:]')"
 
 case "$CHANNEL" in
   telegram)
@@ -112,6 +112,5 @@ aws ssm put-parameter \
   --region "${REGION}"
 
 hr
-echo "Agent '${SLUG}' added to /clawless/clients."
-echo "Run 'tofu apply' to provision."
+echo "Client '${SLUG}' added to /clawless/clients."
 hr

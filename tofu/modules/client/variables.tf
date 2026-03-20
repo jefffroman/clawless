@@ -64,6 +64,12 @@ variable "channel_config" {
   default     = null
 }
 
+variable "is_new" {
+  description = "True for clients being provisioned for the first time. Uses golden snapshot (or blueprint) instead of the pause snapshot. False (default) assumes a pause snapshot exists and errors if it does not."
+  type        = bool
+  default     = false
+}
+
 variable "active" {
   description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
   type        = bool
