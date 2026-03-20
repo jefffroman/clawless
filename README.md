@@ -40,6 +40,8 @@ OpenTofu (tofu apply)
 | [OpenTofu](https://opentofu.org/docs/intro/install/) | >= 1.10 | `brew install opentofu` | `snap install opentofu --classic` |
 | [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) | >= 2.14 | `brew install ansible` | `pip3 install ansible` |
 | [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | >= 2.x | `brew install awscli` | official Linux installer (see link) |
+| [Docker](https://docs.docker.com/get-docker/) | >= 24 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | `apt install docker.io` |
+| [GitHub CLI](https://cli.github.com/) | >= 2.x | `brew install gh` | `apt install gh` |
 | Python 3 | >= 3.10 | pre-installed | `apt install python3` |
 | jq | any | `brew install jq` | `apt install jq` |
 | openssl | any | pre-installed | pre-installed |
