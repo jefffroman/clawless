@@ -44,6 +44,12 @@ variable "golden_snapshot_name" {
   default     = ""
 }
 
+variable "new_client_slugs" {
+  description = "Slugs of clients being provisioned for the first time. Passed by the lifecycle Lambda at apply time; never set in tfvars. Causes the module to use the golden snapshot (or blueprint) rather than expecting a pause snapshot."
+  type        = set(string)
+  default     = []
+}
+
 variable "replica_region" {
   description = "AWS region for the S3 backup replica bucket. Should be geographically separate from aws_region."
   type        = string

@@ -9,10 +9,10 @@ terraform {
 locals {
   name_prefix = "clawless-${var.client_slug}"
 
-  # Discover per-client pause snapshot by fixed name convention.
-  # Falls back to golden snapshot, then blueprint (empty string = blueprint path).
-  client_snap   = data.external.client_snapshot.result.state == "available" ? data.external.client_snapshot.result.name : ""
-  snapshot_name = coalesce(local.client_snap, var.golden_snapshot_name, "")
+  # New clients use the golden snapshot (or blueprint if none baked yet).
+  # Existing clients use their pause snapshot (clawless-{slug}-snap); if it
+  # doesn't exist the Lightsail CLI will error — which is the intended behaviour.
+  snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${var.client_slug}-snap"
   use_snapshot  = local.snapshot_name != ""
 
   tags = merge(var.tags, {
@@ -23,16 +23,6 @@ locals {
 
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
-
-# Discover a per-client pause snapshot by fixed name (clawless-{slug}-snap).
-# Returns state="available" and name if found; empty strings otherwise.
-# pause.sh creates this snapshot; resume.sh deletes it after restore.
-data "external" "client_snapshot" {
-  program = [
-    "bash", "-c",
-    "aws lightsail get-instance-snapshot --instance-snapshot-name clawless-${var.client_slug}-snap --region ${data.aws_region.current.name} --query '{\"name\":instanceSnapshot.name,\"state\":instanceSnapshot.state}' --output json 2>/dev/null || printf '{\"name\":\"\",\"state\":\"\"}'"
-  ]
-}
 
 # ── IAM Role (SSM trust) ──────────────────────────────────────────────────────
 # Lightsail has no native instance profile support, so we use SSM Hybrid
