@@ -90,9 +90,10 @@ data "aws_iam_policy_document" "s3_backup" {
 }
 
 resource "aws_iam_role" "ssm" {
-  name               = "${local.name_prefix}-ssm"
-  assume_role_policy = data.aws_iam_policy_document.ssm_assume.json
-  tags               = local.tags
+  name                 = "${local.name_prefix}-ssm"
+  assume_role_policy   = data.aws_iam_policy_document.ssm_assume.json
+  max_session_duration = 43200 # 12-hour ceiling; role chaining caps actual sessions at 1 hour
+  tags                 = local.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_core" {
@@ -265,6 +266,7 @@ ${base64encode(jsonencode({
   agent_style             = var.agent_style
   agent_channel           = var.agent_channel
   channel_config          = var.channel_config
+  iam_role_arn            = aws_iam_role.ssm.arn
 }))}
 CLIENTVARS
   cd /opt/clawless/ansible
