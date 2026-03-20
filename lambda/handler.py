@@ -10,6 +10,10 @@ Handles all lifecycle transitions:
   - Remove client (key deleted from /clawless/clients)
   - Pause client  (active: false) — snapshots instance before tofu destroys it
   - Resume client (active: true)  — deletes pause snapshot after tofu restores it
+
+If tofu apply fails for a specific client, that client's SSM entry is updated
+with status="error". Error clients are skipped on subsequent runs until an
+operator clears the status field and updates SSM to retry.
 """
 
 import datetime
@@ -35,6 +39,10 @@ REGION = os.environ["AWS_DEFAULT_REGION"]
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 
+def _is_error(cfg):
+    return cfg.get("status") == "error"
+
+
 def lambda_handler(event, context):
     print(f"Event: {json.dumps(event)}")
 
@@ -48,25 +56,50 @@ def lambda_handler(event, context):
     # Pre-apply: snapshot any instances that are about to be paused.
     # Idempotent — skips if snapshot already exists or instance is gone.
     for slug, cfg in clients.items():
-        if not cfg.get("active", True):
+        if not _is_error(cfg) and not cfg.get("active", True):
             _maybe_snapshot_for_pause(slug)
 
     work_dir = tempfile.mkdtemp(dir="/tmp")
+    failed_slugs = set()
     try:
-        _apply(work_dir, version, clients)
+        failed_slugs = _apply(work_dir, version, clients)
     except Exception as e:
         print(f"ERROR: {e}")
         raise
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
+    if failed_slugs:
+        _mark_clients_error(clients, failed_slugs)
+
     # Post-apply: delete pause snapshots for clients that were just resumed.
     # Idempotent — skips if no snapshot exists.
     for slug, cfg in clients.items():
-        if cfg.get("active", True):
+        if not _is_error(cfg) and cfg.get("active", True):
             _maybe_delete_pause_snapshot(slug)
 
+    if failed_slugs:
+        raise RuntimeError(f"tofu apply failed for: {sorted(failed_slugs)}")
+
     return {"status": "success"}
+
+
+def _mark_clients_error(clients, failed_slugs):
+    """Write status='error' for failed clients back to SSM.
+
+    This triggers another Lambda run, but error clients are skipped there,
+    so the re-run is a no-op for them. The operator must clear status to retry.
+    """
+    updated = {slug: dict(cfg) for slug, cfg in clients.items()}
+    for slug in failed_slugs:
+        updated[slug]["status"] = "error"
+    ssm.put_parameter(
+        Name="/clawless/clients",
+        Value=json.dumps(updated),
+        Type="String",
+        Overwrite=True,
+    )
+    print(f"Marked as error in SSM: {sorted(failed_slugs)}")
 
 
 def _maybe_snapshot_for_pause(slug):
@@ -191,6 +224,7 @@ def _parse_state_slugs(output):
 
 
 def _apply(work_dir, version, clients):
+    """Run tofu apply for all clients. Returns a set of slugs that failed."""
     # Clone repo at pinned version
     _run(["git", "clone", "--depth=1", "--branch", version, REPO_URL, work_dir])
 
@@ -221,7 +255,8 @@ def _apply(work_dir, version, clients):
         env=env,
     )
 
-    # Detect removed clients (present in state but absent from SSM)
+    # Detect removed clients (present in state but absent from SSM).
+    # Error clients are kept in ssm_slugs so they are never treated as removed.
     state_result = _run(["tofu", "state", "list"], cwd=tofu_dir, env=env)
     state_slugs = _parse_state_slugs(state_result.stdout)
     ssm_slugs = set(clients.keys())
@@ -234,33 +269,30 @@ def _apply(work_dir, version, clients):
             _backup_client_to_shared(slug, account_id)
         _patch_force_destroy(tofu_dir)
 
-    # Clients in SSM but not yet in state are brand new.
-    # Also treat active clients whose Lightsail instance is missing as new —
-    # this handles partial failures where state exists but the instance was lost.
-    # Paused clients (active=false) are excluded: their instance is intentionally
-    # absent and they need the pause snapshot path on resume.
-    new_slugs = ssm_slugs - state_slugs
-    for slug, cfg in clients.items():
-        if slug in state_slugs and cfg.get("active", True):
-            try:
-                lightsail.get_instance(instanceName=f"clawless-{slug}")
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "NotFoundException":
-                    print(f"[new:{slug}] in state but instance missing — treating as new")
-                    new_slugs.add(slug)
-
+    # Clients in SSM but not yet in state are brand new — use golden snapshot.
+    # Error clients are excluded; they require manual SSM intervention to retry.
+    active_ssm_slugs = {s for s, c in clients.items() if not _is_error(c)}
+    new_slugs = active_ssm_slugs - state_slugs
     new_slugs_var = f"-var=new_client_slugs={json.dumps(sorted(new_slugs))}"
 
-    # Apply each client instance individually to reduce error surface
-    all_slugs = ssm_slugs | removed_slugs
+    # Apply each client individually to limit blast radius.
+    # Error clients are excluded; removed clients are included (to be destroyed).
+    failed_slugs = set()
+    all_slugs = active_ssm_slugs | removed_slugs
     for slug in sorted(all_slugs):
-        _run(
-            ["tofu", "apply", "-auto-approve", "-input=false",
-             new_slugs_var,
-             f"-target=module.client[\"{slug}\"]"],
-            cwd=tofu_dir,
-            env=env,
-        )
+        try:
+            _run(
+                ["tofu", "apply", "-auto-approve", "-input=false",
+                 new_slugs_var,
+                 f"-target=module.client[\"{slug}\"]"],
+                cwd=tofu_dir,
+                env=env,
+            )
+        except subprocess.CalledProcessError:
+            print(f"[{slug}] ERROR: tofu apply failed — will mark as error in SSM")
+            failed_slugs.add(slug)
+
+    return failed_slugs
 
 
 def _run(cmd, **kwargs):
