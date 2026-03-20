@@ -200,7 +200,6 @@ resource "null_resource" "instance_from_snapshot" {
 
   triggers = {
     instance_name = local.name_prefix
-    snapshot_name = local.snapshot_name
     region        = data.aws_region.current.name
   }
 
