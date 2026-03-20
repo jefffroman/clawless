@@ -24,11 +24,14 @@ from botocore.exceptions import ClientError
 
 ssm = boto3.client("ssm")
 s3 = boto3.client("s3")
+sns = boto3.client("sns")
 lightsail = boto3.client("lightsail")
+sts = boto3.client("sts")
 
 STATE_BUCKET = os.environ["STATE_BUCKET"]
 REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
+ALERTS_TOPIC_ARN = os.environ["ALERTS_TOPIC_ARN"]
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 
@@ -62,6 +65,9 @@ def lambda_handler(event, context):
     for slug, cfg in clients.items():
         if cfg.get("active", True):
             _maybe_delete_pause_snapshot(slug)
+
+    # Notify if any client backup buckets are orphaned (client was removed).
+    _notify_orphaned_buckets(clients)
 
     return {"status": "success"}
 
@@ -130,6 +136,39 @@ def _maybe_delete_pause_snapshot(slug):
         print(f"[resume:{slug}] snapshot deleted")
     except ClientError as e:
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
+
+
+def _notify_orphaned_buckets(clients):
+    """Publish an SNS alert if any backup buckets exist with no matching client in SSM."""
+    account_id = sts.get_caller_identity()["Account"]
+    suffix = f"-backup-{account_id}"
+    active_slugs = set(clients.keys())
+
+    all_buckets = s3.list_buckets()["Buckets"]
+    orphaned = [
+        b["Name"] for b in all_buckets
+        if b["Name"].startswith("clawless-") and b["Name"].endswith(suffix)
+        and b["Name"][len("clawless-"):-len(suffix)] not in active_slugs
+    ]
+
+    if not orphaned:
+        return
+
+    slugs = [b[len("clawless-"):-len(suffix)] for b in orphaned]
+    message = (
+        "One or more Clawless clients were removed. "
+        "Their S3 backup buckets were not deleted and require manual cleanup.\n\n"
+        "Orphaned buckets:\n" +
+        "".join(f"  - {b}\n" for b in orphaned) +
+        "\nAlso check replica buckets in the backup region.\n"
+        "Delete with: aws s3 rb s3://<bucket> --force"
+    )
+    sns.publish(
+        TopicArn=ALERTS_TOPIC_ARN,
+        Subject=f"Clawless: S3 cleanup needed for removed client(s): {', '.join(slugs)}",
+        Message=message,
+    )
+    print(f"SNS alert sent for orphaned buckets: {orphaned}")
 
 
 def _apply(work_dir, version):

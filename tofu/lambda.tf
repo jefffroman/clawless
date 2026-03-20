@@ -155,8 +155,9 @@ resource "aws_lambda_function" "lifecycle" {
 
   environment {
     variables = {
-      STATE_BUCKET = local.state_bucket
-      REPO_URL     = "https://github.com/jefffroman/clawless"
+      STATE_BUCKET      = local.state_bucket
+      REPO_URL          = "https://github.com/jefffroman/clawless"
+      ALERTS_TOPIC_ARN  = aws_sns_topic.alerts.arn
     }
   }
 
