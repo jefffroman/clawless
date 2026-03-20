@@ -20,3 +20,4 @@ LIFECYCLE.md
 ansible/inventory/hosts.yml
 ansible/host_vars/*/vars.yml
 *.swp
+CLAUDE.md
