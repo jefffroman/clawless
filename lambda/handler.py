@@ -234,9 +234,21 @@ def _apply(work_dir, version, clients):
             _backup_client_to_shared(slug, account_id)
         _patch_force_destroy(tofu_dir)
 
-    # Clients in SSM but not yet in state are brand new — pass them as new_client_slugs
-    # so the module uses the golden snapshot instead of expecting a pause snapshot.
+    # Clients in SSM but not yet in state are brand new.
+    # Also treat active clients whose Lightsail instance is missing as new —
+    # this handles partial failures where state exists but the instance was lost.
+    # Paused clients (active=false) are excluded: their instance is intentionally
+    # absent and they need the pause snapshot path on resume.
     new_slugs = ssm_slugs - state_slugs
+    for slug, cfg in clients.items():
+        if slug in state_slugs and cfg.get("active", True):
+            try:
+                lightsail.get_instance(instanceName=f"clawless-{slug}")
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "NotFoundException":
+                    print(f"[new:{slug}] in state but instance missing — treating as new")
+                    new_slugs.add(slug)
+
     new_slugs_var = f"-var=new_client_slugs={json.dumps(sorted(new_slugs))}"
 
     # Apply each client instance individually to reduce error surface
