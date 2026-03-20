@@ -41,9 +41,6 @@ resource "aws_s3_bucket" "workspace_backup" {
   bucket = "${local.name_prefix}-backup-${data.aws_caller_identity.current.account_id}"
   tags   = local.tags
 
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket_versioning" "workspace_backup" {
@@ -98,9 +95,6 @@ resource "aws_s3_bucket" "workspace_backup_replica" {
   bucket   = "${local.name_prefix}-backup-replica-${data.aws_caller_identity.current.account_id}"
   tags     = local.tags
 
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket_versioning" "workspace_backup_replica" {
