@@ -2,11 +2,6 @@ module "client" {
   source   = "./modules/client"
   for_each = local.clients
 
-  providers = {
-    aws        = aws
-    aws.backup = aws.backup
-  }
-
   client_slug          = each.key
   display_name         = each.value.display_name
   active               = try(each.value.active, true)

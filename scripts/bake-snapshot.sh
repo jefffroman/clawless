@@ -229,10 +229,15 @@ else
   echo "golden_snapshot_name = \"$SNAPSHOT_NAME\"" >> "$TFVARS"
 fi
 
+# Upload updated tfvars to S3 so the lifecycle Lambda picks up the new snapshot.
+STATE_BUCKET="clawless-tfstate-${ACCOUNT_ID}"
+aws s3 cp "$TFVARS" "s3://${STATE_BUCKET}/config/terraform.tfvars"
+log "terraform.tfvars uploaded to s3://${STATE_BUCKET}/config/terraform.tfvars"
+
 hr
 log "Golden snapshot ready: $SNAPSHOT_NAME"
 log "terraform.tfvars updated with golden_snapshot_name."
-log "Run 'cd tofu && tofu apply' to provision new clients from this snapshot."
+log "Run 'tofu apply' or update /clawless/clients to trigger the lifecycle Lambda."
 hr
 
 # cleanup runs via trap EXIT

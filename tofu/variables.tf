@@ -22,12 +22,6 @@ variable "lightsail_blueprint_id" {
   default     = "openclaw_ls_1_0"
 }
 
-variable "backup_region" {
-  description = "Secondary AWS region for S3 cross-region replication. Should be geographically distant from aws_region."
-  type        = string
-  default     = "us-west-2"
-}
-
 variable "alert_email" {
   description = "Email address for operator alerts (Bedrock budget, backup failures). Requires manual confirmation of the SNS subscription after first apply."
   type        = string
