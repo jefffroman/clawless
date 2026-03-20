@@ -65,9 +65,9 @@ variable "channel_config" {
 }
 
 variable "bedrock_model" {
-  description = "OpenClaw model string for this client (e.g. bedrock/us.amazon.nova-micro-v1:0). Defaults to Nova Micro; override for paying clients."
+  description = "OpenClaw model string for this client (e.g. bedrock/us.amazon.nova-pro-v1:0)."
   type        = string
-  default     = "bedrock/us.amazon.nova-micro-v1:0"
+  default     = "bedrock/us.amazon.nova-pro-v1:0"
 }
 
 variable "is_new" {

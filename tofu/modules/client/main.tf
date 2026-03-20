@@ -177,6 +177,7 @@ resource "aws_ssm_activation" "this" {
   name               = local.name_prefix
   iam_role           = aws_iam_role.ssm.name
   registration_limit = 5 # Buffer for instance recreation cycles; each new instance uses one slot
+  tags               = local.tags # Propagated to managed instances that register with this activation
 
   depends_on = [aws_iam_role_policy_attachment.ssm_core]
 
