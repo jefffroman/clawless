@@ -5,7 +5,7 @@ module "client" {
   client_slug          = each.key
   display_name         = each.value.display_name
   is_new               = contains(var.new_client_slugs, each.key)
-  bedrock_model        = try(each.value.bedrock_model, "bedrock/us.amazon.nova-pro-v1:0")
+  bedrock_model        = try(each.value.bedrock_model, "bedrock/us.amazon.nova-lite-v1:0")
   active               = try(each.value.active, true)
   agent_name           = try(each.value.agent_name, "")
   agent_style          = try(each.value.agent_style, "assistant")
