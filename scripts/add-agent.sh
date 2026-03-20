@@ -113,5 +113,4 @@ aws ssm put-parameter \
 
 hr
 echo "Client '${SLUG}' added to /clawless/clients."
-echo "Run 'tofu apply' to provision."
 hr
