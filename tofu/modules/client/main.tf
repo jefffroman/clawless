@@ -61,6 +61,14 @@ data "aws_iam_policy_document" "bedrock" {
     actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = ["*"]
   }
+
+  # Required for cross-region inference profiles (us.anthropic.*, us.amazon.*)
+  statement {
+    sid       = "MarketplaceSubscriptionView"
+    effect    = "Allow"
+    actions   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
+    resources = ["*"]
+  }
 }
 
 data "aws_iam_policy_document" "s3_backup" {
@@ -183,7 +191,7 @@ resource "aws_ssm_activation" "this" {
   depends_on = [aws_iam_role_policy_attachment.ssm_core]
 
   lifecycle {
-    ignore_changes = [expiration_date]
+    ignore_changes = [expiration_date, tags, tags_all]
   }
 }
 
@@ -243,14 +251,15 @@ resource "null_resource" "instance_from_snapshot" {
       cat > "$_tmpud" <<'USERDATA'
 set -eu
 
-# SSM registration: skipped for resume (registration file present in per-client snapshot)
-if [ ! -s /var/lib/amazon/ssm/registration ]; then
-  /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
-    -id ${try(aws_ssm_activation.this[0].id, "")} \
-    -code ${try(aws_ssm_activation.this[0].activation_code, "")} \
-    -region ${data.aws_region.current.name}
-  systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
-fi
+# SSM registration: always re-register on every boot. The activation is recreated
+# fresh on each resume (Lambda runs tofu apply), so stale registration files in
+# the snapshot would cause a MachineFingerprintDoesNotMatch error. The -y flag
+# overwrites any existing registration unconditionally.
+/snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
+  -id ${try(aws_ssm_activation.this[0].id, "")} \
+  -code ${try(aws_ssm_activation.this[0].activation_code, "")} \
+  -region ${data.aws_region.current.name}
+systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
 
 # Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
 # Client vars are embedded at tofu apply time — no AWS API calls needed from the instance.
