@@ -35,14 +35,14 @@ OpenTofu (tofu apply)
 
 ### Tools
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| [OpenTofu](https://opentofu.org/docs/intro/install/) | >= 1.10 | `brew install opentofu` |
-| [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) | >= 2.14 | `brew install ansible` |
-| [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | >= 2.x | `brew install awscli` |
-| Python 3 | >= 3.10 | for `scripts/check-costs.py` |
-| jq | any | `brew install jq` |
-| openssl | any | pre-installed on macOS |
+| Tool | Version | macOS | Ubuntu |
+|------|---------|-------|--------|
+| [OpenTofu](https://opentofu.org/docs/intro/install/) | >= 1.10 | `brew install opentofu` | `snap install opentofu --classic` |
+| [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) | >= 2.14 | `brew install ansible` | `pip3 install ansible` |
+| [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | >= 2.x | `brew install awscli` | official Linux installer (see link) |
+| Python 3 | >= 3.10 | pre-installed | `apt install python3` |
+| jq | any | `brew install jq` | `apt install jq` |
+| openssl | any | pre-installed | pre-installed |
 
 ### AWS Credentials
 
@@ -93,7 +93,7 @@ Run once to create the S3 state bucket, write config files, and register your fi
 You will be prompted for:
 - **AWS region** — primary region for Lightsail instances (e.g., `us-east-1`)
 - **SSH public key** — paste the contents of `~/.ssh/clawless_ansible.pub`
-- **Alert email** — receives Bedrock budget alerts and backup failure notifications
+- **Alert email** — receives Bedrock budget alerts and failure notifications
 
 This creates:
 - S3 bucket for OpenTofu state (with versioning + encryption)
@@ -111,8 +111,6 @@ To add additional agents after bootstrap:
 ```
 
 Prompts for: client display name, agent name (required), channel integration (Telegram, Discord, Slack, or other), and channel-specific credentials (bot tokens, etc.).
-
-> Agent style (persona) is intentionally omitted from the setup flow — it is configured per-client directly in the SSM parameter after provisioning.
 
 Client config is stored in SSM Parameter Store at `/clawless/clients` — this is the source of truth for `tofu apply`.
 
@@ -200,7 +198,7 @@ Pausing snapshots the instance and destroys it. You pay only for the snapshot (~
 ./scripts/resume.sh <client-slug>
 ```
 
-The instance is recreated from its pause snapshot. The workspace is restored from S3. No re-provisioning — the instance boots fully configured.
+The instance is recreated from its pause snapshot. The workspace is restored from S3. No re-provisioning — the instance boots fully configured, usually in under a minute.
 
 ### Update Ansible playbooks on running instances
 
@@ -238,80 +236,6 @@ tofu/terraform.tfvars
 ```
 
 These are listed in `.gitignore`.
-
----
-
-## Repository Layout
-
-```
-clawless/
-├── ansible/
-│   ├── ansible.cfg                      # SSH key, roles path, remote user
-│   ├── inventory/hosts.yml.example      # Template for manual re-runs
-│   ├── playbooks/
-│   │   ├── provision-base.yml           # Golden image bake (run once via SSH)
-│   │   ├── provision-client.yml         # Per-client config (run via user-data)
-│   │   ├── provision.yml                # Legacy: full provision over SSH
-│   │   └── update.yml                   # Roll out OpenClaw package updates
-│   └── roles/
-│       ├── common/                      # System hardening, apt upgrades, timezone
-│       ├── openclaw/                    # Service config, gateway token, systemd
-│       ├── backup/                      # Hourly S3 sync + CloudWatch metrics
-│       └── memory/                      # 3-layer memory: Markdown + ChromaDB + NetworkX
-├── scripts/
-│   ├── bootstrap.sh                     # First-time setup
-│   ├── add-agent.sh                     # Register a new client in SSM
-│   ├── bake-snapshot.sh                 # Build golden Lightsail snapshot
-│   ├── publish-ansible.sh               # Sync playbooks to S3
-│   ├── pause.sh                         # Snapshot + destroy instance
-│   ├── resume.sh                        # Recreate instance from pause snapshot
-│   ├── ssm-run.sh                       # Run a shell command via SSM
-│   └── check-costs.py                   # AWS cost breakdown by service
-├── tofu/
-│   ├── main.tf                          # Client module instantiation
-│   ├── clients.tf                       # SSM → local.clients
-│   ├── variables.tf                     # Input variables
-│   ├── providers.tf                     # AWS provider (primary + backup region)
-│   ├── backend.tf                       # S3 backend config
-│   ├── keys.tf                          # Lightsail SSH key pair
-│   ├── alerts.tf                        # SNS + CloudWatch + Bedrock budgets
-│   ├── outputs.tf                       # Instance IPs, bucket names
-│   ├── terraform.tfvars.example         # Variable template
-│   └── modules/client/                  # Per-client resource module
-│       ├── main.tf                      # S3, IAM, SSM, Lightsail, firewall
-│       ├── variables.tf                 # Module inputs
-│       └── outputs.tf                   # Module outputs
-└── LIFECYCLE.md                         # Detailed pause/resume lifecycle notes
-```
-
----
-
-## Instance Lifecycle
-
-```
-bootstrap.sh + add-agent.sh
-        |
-        v
-bake-snapshot.sh  →  golden snapshot (clawless-golden-<ts>)
-        |
-        v
-tofu apply  →  instance created from snapshot
-               |
-               v
-          user-data runs ansible-playbook provision-client.yml
-               |
-               v
-          /var/lib/openclaw/.provisioned written
-          OpenClaw gateway listening on loopback:18789
-               |
-        [running]
-               |
-        pause.sh  →  pause snapshot + instance destroyed
-               |
-        resume.sh →  instance recreated from pause snapshot
-                      workspace restored from S3
-                      .provisioned present → ansible skipped
-```
 
 ---
 
