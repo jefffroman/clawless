@@ -38,12 +38,12 @@
     access_time: preserve
 
 # ── AWS credential setup ──────────────────────────────────────────────────────
-# The Lightsail IMDS provides a Lightsail-native IAM role (different AWS
-# account) that has no access to our Bedrock or S3 resources. The SSM State
-# Manager credential-refresh document (runs every 45 min, immediately on new
-# instances) writes a fresh 1-hour STS session from the correct per-client
-# IAM role to /home/ubuntu/.aws/credentials as the [default] profile.
-# AWS_EC2_METADATA_DISABLED prevents the SDK from falling back to IMDS.
+# Lightsail has no instance profile support; IMDS provides the wrong IAM role
+# (Lightsail's own account). Instead, the AWS SDK calls clawless-creds-helper
+# via credential_process. The helper uses sudo to access root's SSM credentials,
+# assumes the per-client role for a 12-hour session, and returns credential_process
+# JSON including Expiration so the SDK auto-refreshes without a service restart.
+# AWS_EC2_METADATA_DISABLED prevents fallback to IMDS.
 
 - name: Ensure AWS credentials directory exists
   ansible.builtin.file:
@@ -53,15 +53,23 @@
     group: "{{ openclaw_user }}"
     mode: "0700"
 
-- name: Create credentials placeholder (populated by SSM State Manager)
-  ansible.builtin.file:
-    path: /home/ubuntu/.aws/credentials
-    state: touch
+- name: Deploy credential_process helper script
+  ansible.builtin.template:
+    src: clawless-creds-helper.j2
+    dest: /usr/local/sbin/clawless-creds-helper
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
+
+- name: Deploy AWS config with credential_process
+  ansible.builtin.copy:
+    dest: /home/ubuntu/.aws/config
+    content: |
+      [default]
+      credential_process = /usr/local/sbin/clawless-creds-helper
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
     mode: "0600"
-    modification_time: preserve
-    access_time: preserve
 
 # Use lineinfile (not template) so the OPENCLAW_GATEWAY_TOKEN line written below
 # is never clobbered when the region changes on re-runs.
@@ -72,18 +80,18 @@
     line: "AWS_DEFAULT_REGION={{ openclaw_bedrock_region }}"
   notify: Restart openclaw
 
-- name: Set AWS_SHARED_CREDENTIALS_FILE in env file
-  ansible.builtin.lineinfile:
-    path: "{{ openclaw_env_file }}"
-    regexp: "^AWS_SHARED_CREDENTIALS_FILE="
-    line: "AWS_SHARED_CREDENTIALS_FILE=/home/ubuntu/.aws/credentials"
-  notify: Restart openclaw
-
 - name: Disable IMDS fallback in env file
   ansible.builtin.lineinfile:
     path: "{{ openclaw_env_file }}"
     regexp: "^AWS_EC2_METADATA_DISABLED="
     line: "AWS_EC2_METADATA_DISABLED=true"
+  notify: Restart openclaw
+
+- name: Enable AWS SDK config file loading (required for credential_process)
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_SDK_LOAD_CONFIG="
+    line: "AWS_SDK_LOAD_CONFIG=1"
   notify: Restart openclaw
 
 # The gateway token is generated on the remote host and written directly to

@@ -1,0 +1,23 @@
+#!/bin/bash
+# AWS credential_process helper for OpenClaw.
+#
+# Called by the AWS SDK (running as ubuntu) whenever credentials are needed
+# or within 5 minutes of Expiration. Requests a 12-hour STS session from
+# the per-client SSM role; the SDK auto-refreshes before expiry without
+# restarting any service.
+#
+# Requires sudo because SSM agent credentials (the trust anchor) are held
+# by the root AWS config; ubuntu has NOPASSWD:ALL on Lightsail Ubuntu images.
+#
+# Note: role chaining (assuming a role using SSM temporary credentials) is
+# capped at 1 hour by AWS regardless of max_session_duration. That's fine —
+# the SDK sees Expiration and auto-refreshes without restarting any service.
+
+set -euo pipefail
+
+sudo aws sts assume-role \
+  --role-arn "{{ iam_role_arn }}" \
+  --role-session-name clawless-creds \
+  --output json \
+  --query 'Credentials' \
+| jq '{Version:1,AccessKeyId:.AccessKeyId,SecretAccessKey:.SecretAccessKey,SessionToken:.SessionToken,Expiration:.Expiration}'
