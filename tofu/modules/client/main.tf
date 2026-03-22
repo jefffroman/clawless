@@ -7,16 +7,19 @@ terraform {
 }
 
 locals {
-  name_prefix = "clawless-${var.client_slug}"
+  # agent_slug is "{client_slug}/{agent_slug}" (slash-separated, matching SSM path).
+  # All AWS resource names use the hyphenated form.
+  resource_slug = replace(var.agent_slug, "/", "-")
+  name_prefix   = "clawless-${local.resource_slug}"
 
-  # New clients use the golden snapshot (or blueprint if none baked yet).
-  # Existing clients use their pause snapshot (clawless-{slug}-snap); if it
+  # New agents use the golden snapshot (or blueprint if none baked yet).
+  # Existing agents use their pause snapshot (clawless-{slug}-snap); if it
   # doesn't exist the Lightsail CLI will error — which is the intended behaviour.
-  snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${var.client_slug}-snap"
+  snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${local.resource_slug}-snap"
   use_snapshot  = local.snapshot_name != ""
 
   tags = merge(var.tags, {
-    Client = var.client_slug
+    Agent = var.agent_slug
     Active = tostring(var.active)
   })
 }
@@ -69,7 +72,7 @@ data "aws_iam_policy_document" "s3_backup" {
       "s3:GetObject",
       "s3:DeleteObject",
     ]
-    resources = ["arn:aws:s3:::${var.backup_bucket}/clients/${var.client_slug}/*"]
+    resources = ["arn:aws:s3:::${var.backup_bucket}/agents/${var.agent_slug}/*"]
   }
 
   statement {
@@ -81,7 +84,7 @@ data "aws_iam_policy_document" "s3_backup" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["clients/${var.client_slug}/*"]
+      values   = ["agents/${var.agent_slug}/*"]
     }
   }
 }
@@ -241,8 +244,8 @@ systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
 if [ ! -f /var/lib/openclaw/.provisioned ]; then
   base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
 ${base64encode(jsonencode({
-  client_slug             = var.client_slug
-  display_name            = var.display_name
+  agent_slug              = var.agent_slug
+  client_name             = var.client_name
   openclaw_bedrock_region = data.aws_region.current.name
   openclaw_backup_bucket  = var.backup_bucket
   bedrock_model           = var.bedrock_model

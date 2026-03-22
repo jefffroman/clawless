@@ -44,8 +44,8 @@ variable "golden_snapshot_name" {
   default     = ""
 }
 
-variable "new_client_slugs" {
-  description = "Slugs of clients being provisioned for the first time. Passed by the lifecycle Lambda at apply time; never set in tfvars. Causes the module to use the golden snapshot (or blueprint) rather than expecting a pause snapshot."
+variable "new_agent_slugs" {
+  description = "Slugs of agents being provisioned for the first time. Passed by the lifecycle Lambda at apply time; never set in tfvars. Causes the module to use the golden snapshot (or blueprint) rather than expecting a pause snapshot."
   type        = set(string)
   default     = []
 }

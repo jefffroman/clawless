@@ -2,11 +2,14 @@
 # ssm-run.sh — Run a shell command on a clawless managed instance via SSM.
 #
 # Usage: ./scripts/ssm-run.sh <managed-instance-id> <command> [--region <region>]
-#        ./scripts/ssm-run.sh --slug <client-slug> <command> [--region <region>]
+#        ./scripts/ssm-run.sh --slug <client-agent-slug> <command> [--region <region>]
+#
+# The slug is the hyphenated form of the agent path: e.g. "zalman-wingmate" for
+# the agent at /clawless/clients/zalman/wingmate.
 #
 # Examples:
 #   ./scripts/ssm-run.sh mi-05ab4d8c74833604c "ls /var/lib/openclaw"
-#   ./scripts/ssm-run.sh --slug test "cat /var/log/cloud-init-output.log"
+#   ./scripts/ssm-run.sh --slug zalman-wingmate "cat /var/log/cloud-init-output.log"
 
 set -euo pipefail
 

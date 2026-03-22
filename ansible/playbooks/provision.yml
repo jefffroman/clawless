@@ -17,7 +17,7 @@
       ansible.builtin.shell:
         cmd: >
           aws ssm describe-instance-information
-          --filters 'Key=IamRole,Values=clawless-{{ client_slug }}-ssm'
+          --filters 'Key=IamRole,Values=clawless-{{ agent_slug | replace("/", "-") }}-ssm'
           --region '{{ openclaw_bedrock_region }}'
           --query 'InstanceInformationList[0].InstanceId'
           --output text
