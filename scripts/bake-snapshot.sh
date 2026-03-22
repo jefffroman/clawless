@@ -234,10 +234,13 @@ STATE_BUCKET="clawless-tfstate-${ACCOUNT_ID}"
 aws s3 cp "$TFVARS" "s3://${STATE_BUCKET}/config/terraform.tfvars"
 log "terraform.tfvars uploaded to s3://${STATE_BUCKET}/config/terraform.tfvars"
 
+log "Running tofu apply to register new snapshot name in state..."
+cd "$TOFU_DIR"
+tofu apply -auto-approve -input=false
+
 hr
 log "Golden snapshot ready: $SNAPSHOT_NAME"
-log "terraform.tfvars updated with golden_snapshot_name."
-log "Run 'tofu apply' or update /clawless/clients to trigger the lifecycle Lambda."
+log "terraform.tfvars updated and tofu state reflects new golden_snapshot_name."
 hr
 
 # cleanup runs via trap EXIT

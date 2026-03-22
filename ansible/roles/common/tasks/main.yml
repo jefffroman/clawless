@@ -17,7 +17,6 @@
 - name: Install essential packages
   ansible.builtin.apt:
     name:
-      - awscli
       - curl
       - ca-certificates
       - gnupg
@@ -25,6 +24,12 @@
       - unattended-upgrades
       - jq
       - python3-venv
+    state: present
+
+- name: Install AWS CLI v2 via snap
+  community.general.snap:
+    name: aws-cli
+    classic: true
     state: present
 
 - name: Configure unattended security upgrades

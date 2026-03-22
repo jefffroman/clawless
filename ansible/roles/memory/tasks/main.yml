@@ -74,6 +74,22 @@
     mode: "0640"
     force: false
 
+- name: Seed identity and persona files (first provision only)
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ openclaw_workspace_dir }}/{{ item.dest }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
+    force: false
+  loop:
+    - { src: SOUL.md.j2,      dest: SOUL.md }
+    - { src: IDENTITY.md.j2,  dest: IDENTITY.md }
+    - { src: TOOLS.md.j2,     dest: TOOLS.md }
+    - { src: USER.md.j2,      dest: USER.md }
+    - { src: HEARTBEAT.md.j2, dest: HEARTBEAT.md }
+    - { src: BOOTSTRAP.md.j2, dest: BOOTSTRAP.md }
+
 - name: Patch OpenClaw config for memory search and model
   ansible.builtin.command:
     cmd: >
