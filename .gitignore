@@ -6,7 +6,6 @@ memory/
 !*.env.j2
 
 # Terraform / OpenTofu
-tofu/.tofu/
 **/.terraform/
 tofu/terraform.tfstate
 tofu/terraform.tfstate.backup
