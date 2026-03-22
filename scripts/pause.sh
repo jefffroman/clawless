@@ -49,36 +49,6 @@ if [[ "$(echo "$CURRENT" | jq -r --arg s "$SLUG" '.[$s].active != false')" == "f
   log "ERROR: client $SLUG is already paused" >&2; exit 1
 fi
 
-# Clean cloud-init state on the instance before snapshotting so that on resume
-# cloud-init treats the restored instance as a first boot and runs user-data.
-INSTANCE_ID=$(aws ssm describe-instance-information \
-  --region "$REGION" \
-  --query "InstanceInformationList[?Name=='clawless-${SLUG}' && PingStatus=='Online'].InstanceId | [0]" \
-  --output text 2>/dev/null || true)
-
-if [[ -n "$INSTANCE_ID" && "$INSTANCE_ID" != "None" ]]; then
-  log "Cleaning cloud-init state on $INSTANCE_ID before snapshot..."
-  CMD_ID=$(aws ssm send-command \
-    --instance-ids "$INSTANCE_ID" \
-    --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cloud-init clean --logs"]' \
-    --region "$REGION" \
-    --query 'Command.CommandId' \
-    --output text)
-  for i in $(seq 1 12); do
-    STATUS=$(aws ssm get-command-invocation \
-      --command-id "$CMD_ID" \
-      --instance-id "$INSTANCE_ID" \
-      --region "$REGION" \
-      --query 'Status' --output text 2>/dev/null || echo "Pending")
-    [[ "$STATUS" != "InProgress" && "$STATUS" != "Pending" ]] && break
-    sleep 5
-  done
-  log "cloud-init clean status: $STATUS"
-else
-  log "WARNING: No online SSM instance found for $SLUG — skipping cloud-init clean."
-fi
-
 log "Updating /clawless/clients (active=false)..."
 UPDATED=$(echo "$CURRENT" | jq --arg s "$SLUG" '.[$s].active = false')
 aws ssm put-parameter \
