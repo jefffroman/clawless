@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# resume.sh — Resume a paused client by setting active=true in SSM.
+# resume.sh — Resume a paused agent by setting active=true in SSM.
 # The lifecycle Lambda discovers the pause snapshot, restores the instance,
 # and cleans up the snapshot automatically.
 #
-# Usage: ./scripts/resume.sh <client-slug> [--region <region>]
+# Usage: ./scripts/resume.sh <client-slug> <agent-slug> [--region <region>]
+# Example: ./scripts/resume.sh zalman wingmate
 
 set -euo pipefail
 
@@ -13,12 +14,12 @@ TOFU_DIR="$REPO_ROOT/tofu"
 hr() { printf '%*s\n' 72 '' | tr ' ' '-'; }
 log() { echo "[resume] $*"; }
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <client-slug> [--region <region>]" >&2
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <client-slug> <agent-slug> [--region <region>]" >&2
   exit 1
 fi
 
-SLUG="$1"; shift
+CLIENT_SLUG="$1"; AGENT_SLUG="$2"; shift 2
 REGION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,27 +34,30 @@ if [[ -z "$REGION" ]]; then
   REGION="${REGION:-us-east-1}"
 fi
 
+AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
+RESOURCE_SLUG="${CLIENT_SLUG}-${AGENT_SLUG}"
+
 hr
-log "Resuming client: $SLUG"
+log "Resuming agent: ${CLIENT_SLUG}/${AGENT_SLUG}"
 log "  Region: $REGION"
 hr
 
-CLIENTS=$(aws ssm get-parameter \
-  --name /clawless/clients \
+CURRENT=$(aws ssm get-parameter \
+  --name "$AGENT_PARAM" \
   --query 'Parameter.Value' \
-  --output text --region "$REGION")
+  --output text --region "$REGION" 2>/dev/null || true)
 
-if [[ "$(echo "$CLIENTS" | jq -r --arg s "$SLUG" '.[$s] // empty')" == "" ]]; then
-  log "ERROR: client '$SLUG' not found in /clawless/clients" >&2; exit 1
+if [[ -z "$CURRENT" ]]; then
+  log "ERROR: agent '${CLIENT_SLUG}/${AGENT_SLUG}' not found in SSM" >&2; exit 1
 fi
-if [[ "$(echo "$CLIENTS" | jq -r --arg s "$SLUG" '.[$s].active != false')" == "true" ]]; then
-  log "ERROR: client $SLUG is already active" >&2; exit 1
+if [[ "$(echo "$CURRENT" | jq -r '.active != false')" == "true" ]]; then
+  log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already active" >&2; exit 1
 fi
 
-log "Updating /clawless/clients (active=true)..."
-UPDATED=$(echo "$CLIENTS" | jq --arg s "$SLUG" '.[$s].active = true')
+log "Updating ${AGENT_PARAM} (active=true)..."
+UPDATED=$(echo "$CURRENT" | jq '.active = true')
 aws ssm put-parameter \
-  --name /clawless/clients \
+  --name "$AGENT_PARAM" \
   --type String \
   --overwrite \
   --value "$UPDATED" \
@@ -63,7 +67,7 @@ log "Resume triggered. Waiting for SSM agent to reconnect..."
 INSTANCE_ID=""
 for i in $(seq 1 24); do
   INSTANCE_ID=$(aws ssm describe-instance-information \
-    --filters "Key=IamRole,Values=clawless-${SLUG}-ssm" \
+    --filters "Key=IamRole,Values=clawless-${RESOURCE_SLUG}-ssm" \
     --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" \
     --output text --region "$REGION" 2>/dev/null || true)
   [[ -n "$INSTANCE_ID" && "$INSTANCE_ID" != "None" ]] && break
@@ -77,5 +81,5 @@ else
 fi
 
 hr
-log "Client $SLUG resumed."
+log "Agent ${CLIENT_SLUG}/${AGENT_SLUG} resumed."
 hr

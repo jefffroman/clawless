@@ -1,11 +1,11 @@
 module "client" {
   source   = "./modules/client"
-  for_each = local.clients
+  for_each = local.agents
 
-  client_slug          = each.key
-  display_name         = each.value.display_name
-  is_new               = contains(var.new_client_slugs, each.key)
-  bedrock_model        = try(each.value.bedrock_model, "bedrock/us.amazon.nova-lite-v1:0")
+  agent_slug           = each.key
+  client_name          = each.value.client_name
+  is_new               = contains(var.new_agent_slugs, each.key)
+  bedrock_model        = try(each.value.bedrock_model, "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0")
   active               = try(each.value.active, true)
   agent_name           = try(each.value.agent_name, "")
   agent_style          = try(each.value.agent_style, "assistant")

@@ -7,16 +7,19 @@ terraform {
 }
 
 locals {
-  name_prefix = "clawless-${var.client_slug}"
+  # agent_slug is "{client_slug}/{agent_slug}" (slash-separated, matching SSM path).
+  # All AWS resource names use the hyphenated form.
+  resource_slug = replace(var.agent_slug, "/", "-")
+  name_prefix   = "clawless-${local.resource_slug}"
 
-  # New clients use the golden snapshot (or blueprint if none baked yet).
-  # Existing clients use their pause snapshot (clawless-{slug}-snap); if it
+  # New agents use the golden snapshot (or blueprint if none baked yet).
+  # Existing agents use their pause snapshot (clawless-{slug}-snap); if it
   # doesn't exist the Lightsail CLI will error — which is the intended behaviour.
-  snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${var.client_slug}-snap"
+  snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${local.resource_slug}-snap"
   use_snapshot  = local.snapshot_name != ""
 
   tags = merge(var.tags, {
-    Client = var.client_slug
+    Agent = var.agent_slug
     Active = tostring(var.active)
   })
 }
@@ -40,18 +43,7 @@ data "aws_iam_policy_document" "ssm_assume" {
     }
   }
 
-  # Allow the role to assume itself so the SSM credential-refresh document
-  # can call sts:AssumeRole from the managed instance context and write a
-  # fresh 1-hour session to /home/ubuntu/.aws/credentials.
-  statement {
-    sid     = "SelfAssume"
-    effect  = "Allow"
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-ssm"]
-    }
-  }
+
 }
 
 data "aws_iam_policy_document" "bedrock" {
@@ -80,7 +72,7 @@ data "aws_iam_policy_document" "s3_backup" {
       "s3:GetObject",
       "s3:DeleteObject",
     ]
-    resources = ["arn:aws:s3:::${var.backup_bucket}/clients/${var.client_slug}/*"]
+    resources = ["arn:aws:s3:::${var.backup_bucket}/agents/${var.agent_slug}/*"]
   }
 
   statement {
@@ -92,7 +84,7 @@ data "aws_iam_policy_document" "s3_backup" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["clients/${var.client_slug}/*"]
+      values   = ["agents/${var.agent_slug}/*"]
     }
   }
 }
@@ -100,7 +92,7 @@ data "aws_iam_policy_document" "s3_backup" {
 resource "aws_iam_role" "ssm" {
   name                 = "${local.name_prefix}-ssm"
   assume_role_policy   = data.aws_iam_policy_document.ssm_assume.json
-  max_session_duration = 43200 # 12-hour ceiling; role chaining caps actual sessions at 1 hour
+  max_session_duration = 43200 # 12 hours; credential_process sessions are capped at 1 hour by role chaining
   tags                 = local.tags
 }
 
@@ -163,20 +155,6 @@ resource "aws_iam_role_policy" "cloudwatch_backup" {
   policy = data.aws_iam_policy_document.cloudwatch_backup.json
 }
 
-data "aws_iam_policy_document" "self_assume" {
-  statement {
-    sid       = "SelfAssume"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-ssm"]
-  }
-}
-
-resource "aws_iam_role_policy" "self_assume" {
-  name   = "sts-self-assume"
-  role   = aws_iam_role.ssm.id
-  policy = data.aws_iam_policy_document.self_assume.json
-}
 
 # ── SSM Activation ────────────────────────────────────────────────────────────
 
@@ -266,8 +244,8 @@ systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
 if [ ! -f /var/lib/openclaw/.provisioned ]; then
   base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
 ${base64encode(jsonencode({
-  client_slug             = var.client_slug
-  display_name            = var.display_name
+  agent_slug              = var.agent_slug
+  client_name             = var.client_name
   openclaw_bedrock_region = data.aws_region.current.name
   openclaw_backup_bucket  = var.backup_bucket
   bedrock_model           = var.bedrock_model

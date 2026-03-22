@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# pause.sh — Pause a client by setting active=false in SSM.
+# pause.sh — Pause an agent by setting active=false in SSM.
 # The lifecycle Lambda handles snapshot creation and instance destruction automatically.
 #
-# Usage: ./scripts/pause.sh <client-slug> [--region <region>]
+# Usage: ./scripts/pause.sh <client-slug> <agent-slug> [--region <region>]
+# Example: ./scripts/pause.sh zalman wingmate
 
 set -euo pipefail
 
@@ -12,12 +13,12 @@ TOFU_DIR="$REPO_ROOT/tofu"
 hr() { printf '%*s\n' 72 '' | tr ' ' '-'; }
 log() { echo "[pause] $*"; }
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <client-slug> [--region <region>]" >&2
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <client-slug> <agent-slug> [--region <region>]" >&2
   exit 1
 fi
 
-SLUG="$1"; shift
+CLIENT_SLUG="$1"; AGENT_SLUG="$2"; shift 2
 REGION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,27 +33,29 @@ if [[ -z "$REGION" ]]; then
   REGION="${REGION:-us-east-1}"
 fi
 
+AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
+
 hr
-log "Pausing client: $SLUG"
+log "Pausing agent: ${CLIENT_SLUG}/${AGENT_SLUG}"
 log "  Region: $REGION"
 hr
 
 CURRENT=$(aws ssm get-parameter \
-  --name /clawless/clients \
+  --name "$AGENT_PARAM" \
   --query 'Parameter.Value' \
-  --output text --region "$REGION")
+  --output text --region "$REGION" 2>/dev/null || true)
 
-if [[ "$(echo "$CURRENT" | jq -r --arg s "$SLUG" '.[$s] // empty')" == "" ]]; then
-  log "ERROR: client '$SLUG' not found in /clawless/clients" >&2; exit 1
+if [[ -z "$CURRENT" ]]; then
+  log "ERROR: agent '${CLIENT_SLUG}/${AGENT_SLUG}' not found in SSM" >&2; exit 1
 fi
-if [[ "$(echo "$CURRENT" | jq -r --arg s "$SLUG" '.[$s].active != false')" == "false" ]]; then
-  log "ERROR: client $SLUG is already paused" >&2; exit 1
+if [[ "$(echo "$CURRENT" | jq -r '.active != false')" == "false" ]]; then
+  log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already paused" >&2; exit 1
 fi
 
-log "Updating /clawless/clients (active=false)..."
-UPDATED=$(echo "$CURRENT" | jq --arg s "$SLUG" '.[$s].active = false')
+log "Updating ${AGENT_PARAM} (active=false)..."
+UPDATED=$(echo "$CURRENT" | jq '.active = false')
 aws ssm put-parameter \
-  --name /clawless/clients \
+  --name "$AGENT_PARAM" \
   --type String \
   --overwrite \
   --value "$UPDATED" \
@@ -60,5 +63,5 @@ aws ssm put-parameter \
 
 hr
 log "Pause triggered. The lifecycle Lambda will snapshot and destroy the instance."
-log "Resume with: ./scripts/resume.sh $SLUG"
+log "Resume with: ./scripts/resume.sh ${CLIENT_SLUG} ${AGENT_SLUG}"
 hr

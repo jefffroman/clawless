@@ -1,15 +1,15 @@
 """
 Clawless lifecycle Lambda.
 
-Triggered by EventBridge on changes to the /clawless/clients SSM parameter.
+Triggered by EventBridge on changes to the /clawless/clients SSM hierarchy.
 Clones the pinned version of the clawless repo and runs `tofu apply` to
-reconcile all client infrastructure with the desired state in SSM.
+reconcile all agent infrastructure with the desired state in SSM.
 
 Handles all lifecycle transitions:
-  - Add client    (new key in /clawless/clients)
-  - Remove client (key deleted from /clawless/clients)
-  - Pause client  (active: false) — snapshots instance before tofu destroys it
-  - Resume client (active: true)  — deletes pause snapshot after tofu restores it
+  - Add agent    (new path in /clawless/clients/{client}/{agent})
+  - Remove agent (path deleted from SSM)
+  - Pause agent  (active: false) — snapshots instance before tofu destroys it
+  - Resume agent (active: true)  — deletes pause snapshot after tofu restores it
 """
 
 import datetime
@@ -41,36 +41,79 @@ def lambda_handler(event, context):
     version = ssm.get_parameter(Name="/clawless/version")["Parameter"]["Value"]
     print(f"Clawless version: {version}")
 
-    clients = json.loads(
-        ssm.get_parameter(Name="/clawless/clients")["Parameter"]["Value"]
-    )
+    agents = _get_agents()
 
     # Pre-apply: snapshot any instances that are about to be paused.
     # Idempotent — skips if snapshot already exists or instance is gone.
-    for slug, cfg in clients.items():
+    for slug, cfg in agents.items():
         if not cfg.get("active", True):
             _maybe_snapshot_for_pause(slug)
 
     work_dir = tempfile.mkdtemp(dir="/tmp")
     try:
-        _apply(work_dir, version, clients)
+        _apply(work_dir, version, agents)
     except Exception as e:
         print(f"ERROR: {e}")
         raise
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    # Post-apply: delete pause snapshots for clients that were just resumed.
-    # Idempotent — skips if no snapshot exists.
-    for slug, cfg in clients.items():
+    # Post-apply: delete pause snapshots and orphaned SSM instances for
+    # agents that are active. Both operations are idempotent.
+    for slug, cfg in agents.items():
         if cfg.get("active", True):
             _maybe_delete_pause_snapshot(slug)
+            _deregister_offline_instances(slug)
 
     return {"status": "success"}
 
 
-def _maybe_snapshot_for_pause(slug):
+def _get_agents():
+    """Read /clawless/clients hierarchy from SSM, return {agent_path: config} dict.
+
+    SSM structure:
+      /clawless/clients/{client_slug}              → {"client_name": "..."}
+      /clawless/clients/{client_slug}/{agent_slug} → {"agent_name": "...", "active": true, ...}
+
+    Returns a dict keyed by "{client_slug}/{agent_slug}" with client_name merged in.
+    """
+    paginator = ssm.get_paginator("get_parameters_by_path")
+
+    client_records = {}  # {client_slug: {client_name: ...}}
+    agent_records = {}   # {agent_path: {agent_name, active, ...}}
+
+    for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
+        for param in page["Parameters"]:
+            parts = param["Name"].split("/")
+            # /clawless/clients/{client_slug}              → 4 parts
+            # /clawless/clients/{client_slug}/{agent_slug} → 5 parts
+            if len(parts) == 4:
+                client_slug = parts[3]
+                client_records[client_slug] = json.loads(param["Value"])
+            elif len(parts) == 5:
+                client_slug, agent_slug = parts[3], parts[4]
+                agent_records[f"{client_slug}/{agent_slug}"] = json.loads(param["Value"])
+
+    # Join client_name into each agent record
+    agents = {}
+    for agent_path, cfg in agent_records.items():
+        client_slug = agent_path.split("/")[0]
+        agents[agent_path] = {
+            **cfg,
+            "client_name": client_records.get(client_slug, {}).get("client_name", ""),
+        }
+
+    return agents
+
+
+def _resource_slug(agent_path):
+    """Convert 'client/agent' path to 'client-agent' for AWS resource names."""
+    return agent_path.replace("/", "-")
+
+
+def _maybe_snapshot_for_pause(agent_path):
     """Create clawless-{slug}-snap if the instance is running (pause flow)."""
+    slug = _resource_slug(agent_path)
     instance_name = f"clawless-{slug}"
     snapshot_name = f"clawless-{slug}-snap"
 
@@ -116,8 +159,9 @@ def _maybe_snapshot_for_pause(slug):
     print(f"[pause:{slug}] snapshot ready")
 
 
-def _maybe_delete_pause_snapshot(slug):
+def _maybe_delete_pause_snapshot(agent_path):
     """Delete clawless-{slug}-snap after a successful resume (idempotent)."""
+    slug = _resource_slug(agent_path)
     snapshot_name = f"clawless-{slug}-snap"
 
     try:
@@ -135,8 +179,43 @@ def _maybe_delete_pause_snapshot(slug):
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
 
 
-def _backup_client_to_shared(slug, account_id):
-    """Copy all objects from the client backup bucket into the shared archive bucket."""
+def _deregister_offline_instances(agent_path):
+    """Deregister offline managed instances for this agent's IAM role (orphan cleanup).
+
+    Each pause/resume cycle creates a new MI ID, leaving the previous one
+    orphaned in SSM. This sweeps them after a successful resume.
+
+    Only acts if at least one instance is already Online — avoids racing with
+    a freshly booting instance that hasn't sent its first ping yet. Orphans
+    that survive this run will be caught on the next lifecycle event.
+    """
+    slug = _resource_slug(agent_path)
+    role_name = f"clawless-{slug}-ssm"
+
+    all_instances = []
+    paginator = ssm.get_paginator("describe_instance_information")
+    for page in paginator.paginate(Filters=[{"Key": "IamRole", "Values": [role_name]}]):
+        all_instances.extend(page["InstanceInformationList"])
+
+    online  = [i for i in all_instances if i["PingStatus"] == "Online"]
+    offline = [i for i in all_instances if i["PingStatus"] != "Online"]
+
+    if not online:
+        print(f"[cleanup:{slug}] no online instance yet — skipping orphan deregistration")
+        return
+
+    for instance in offline:
+        mi_id = instance["InstanceId"]
+        print(f"[cleanup:{slug}] deregistering orphaned instance {mi_id}")
+        try:
+            ssm.deregister_managed_instance(InstanceId=mi_id)
+        except ClientError as e:
+            print(f"[cleanup:{slug}] WARNING: failed to deregister {mi_id}: {e}")
+
+
+def _backup_agent_to_shared(agent_path, account_id):
+    """Copy all objects from the agent backup prefix into the shared archive bucket."""
+    slug = _resource_slug(agent_path)
     src_bucket = f"clawless-{slug}-backup-{account_id}"
     dst_bucket = f"clawless-backups-{account_id}"
     prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
@@ -181,7 +260,7 @@ def _patch_force_destroy(tofu_dir):
 
 
 def _parse_state_slugs(output):
-    """Extract client slugs from `tofu state list` output."""
+    """Extract agent slugs from `tofu state list` output."""
     slugs = set()
     for line in output.splitlines():
         if line.startswith('module.client["'):
@@ -190,7 +269,7 @@ def _parse_state_slugs(output):
     return slugs
 
 
-def _apply(work_dir, version, clients):
+def _apply(work_dir, version, agents):
     # Clone repo at pinned version
     _run(["git", "clone", "--depth=1", "--branch", version, REPO_URL, work_dir])
 
@@ -221,25 +300,24 @@ def _apply(work_dir, version, clients):
         env=env,
     )
 
-    # Detect removed clients (present in state but absent from SSM).
-    # Error clients are kept in ssm_slugs so they are never treated as removed.
+    # Detect removed agents (present in state but absent from SSM).
     state_result = _run(["tofu", "state", "list"], cwd=tofu_dir, env=env)
     state_slugs = _parse_state_slugs(state_result.stdout)
-    ssm_slugs = set(clients.keys())
+    ssm_slugs = set(agents.keys())
     removed_slugs = state_slugs - ssm_slugs
 
     if removed_slugs:
-        print(f"Detected removed clients: {sorted(removed_slugs)}")
+        print(f"Detected removed agents: {sorted(removed_slugs)}")
         account_id = sts.get_caller_identity()["Account"]
         for slug in sorted(removed_slugs):
-            _backup_client_to_shared(slug, account_id)
+            _backup_agent_to_shared(slug, account_id)
         _patch_force_destroy(tofu_dir)
 
-    # Clients in SSM but not yet in state are brand new — use golden snapshot.
+    # Agents in SSM but not yet in state are brand new — use golden snapshot.
     new_slugs = ssm_slugs - state_slugs
-    new_slugs_var = f"-var=new_client_slugs={json.dumps(sorted(new_slugs))}"
+    new_slugs_var = f"-var=new_agent_slugs={json.dumps(sorted(new_slugs))}"
 
-    # Apply each client individually to reduce error surface
+    # Apply each agent individually to reduce error surface
     all_slugs = ssm_slugs | removed_slugs
     for slug in sorted(all_slugs):
         _run(

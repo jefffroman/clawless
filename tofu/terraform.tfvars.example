@@ -4,11 +4,8 @@ lightsail_availability_zone = "us-east-1a"
 lightsail_bundle_id         = "medium_3_0"
 lightsail_blueprint_id      = "openclaw"   # verify exact ID in AWS Lightsail console
 
-clients = {
-  acme = {
-    display_name = "Acme Corp"
-  }
-}
+# Agents are sourced from SSM Parameter Store (/clawless/clients hierarchy),
+# not from tfvars. Use scripts/add-agent.sh to register agents.
 
 tags = {
   Project   = "clawless"

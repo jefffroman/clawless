@@ -20,5 +20,5 @@ all:
         openclaw_bedrock_region: us-east-1
       hosts:
         acme:
-          ansible_host: 1.2.3.4  # tofu output client_public_ips
-          client_slug: acme
+          ansible_host: 1.2.3.4
+          agent_slug: acme/aria

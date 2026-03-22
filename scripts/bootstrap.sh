@@ -94,13 +94,8 @@ aws s3 cp "${TOFU_DIR}/terraform.tfvars" "s3://${BUCKET}/config/terraform.tfvars
 echo "terraform.tfvars uploaded to s3://${BUCKET}/config/terraform.tfvars"
 
 # ── SSM config parameters ─────────────────────────────────────────────────────
-aws ssm put-parameter \
-  --name "/clawless/clients" \
-  --type "String" \
-  --value "{}" \
-  --region "${REGION}" 2>/dev/null \
-  && echo "Created SSM parameter /clawless/clients" \
-  || echo "SSM parameter /clawless/clients already exists"
+# Agent records live under /clawless/clients/{client_slug}/{agent_slug} and are
+# created by add-agent.sh (called below). No bootstrap needed for that hierarchy.
 
 ask CLAWLESS_VERSION "Clawless version tag to deploy" "v0.0.1"
 aws ssm put-parameter \

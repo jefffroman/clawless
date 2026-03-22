@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Add or update an agent in the /clawless/clients SSM parameter.
-# Called by bootstrap.sh for the first agent; run directly to add more.
+# Register a new agent in the /clawless/clients SSM hierarchy.
+#
+# SSM structure:
+#   /clawless/clients/{client_slug}              → {"client_name": "Acme Corp"}
+#   /clawless/clients/{client_slug}/{agent_slug} → {agent config}
+#
+# Client namespace is claimed atomically via --no-overwrite on the client path,
+# preventing two different clients from sharing the same slug. If the client
+# already exists, the existing client_name is verified to match before proceeding.
 #
 # Usage: add-agent.sh [--region <region>]
 set -euo pipefail
@@ -32,12 +39,15 @@ slugify() {
 }
 
 # ── Client identity ───────────────────────────────────────────────────────────
-ask DISPLAY_NAME "Client display name (e.g. Acme Corp)"
-SLUG="$(slugify "$DISPLAY_NAME")"
-echo "  Client slug: ${SLUG}"
+ask CLIENT_NAME "Client name (e.g. Acme Corp)"
+CLIENT_SLUG="$(slugify "$CLIENT_NAME")"
+echo "  Client slug: ${CLIENT_SLUG}"
 
 # ── Agent identity ────────────────────────────────────────────────────────────
-ask AGENT_NAME "Agent name (e.g. Aria, Max)"
+ask AGENT_NAME "Agent name (e.g. Aria)"
+AGENT_SLUG="$(slugify "$AGENT_NAME")"
+echo "  Agent slug:  ${AGENT_SLUG}"
+echo "  SSM path:    /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
@@ -78,39 +88,53 @@ case "$CHANNEL" in
     ;;
 esac
 
-# ── Build client entry ────────────────────────────────────────────────────────
-CLIENT_JSON="$(jq -cn \
-  --arg display_name   "$DISPLAY_NAME" \
+# ── Claim client namespace (atomic) ──────────────────────────────────────────
+# --no-overwrite on a per-path SSM parameter is atomic: exactly one caller wins
+# if two race to register the same client slug simultaneously.
+CLIENT_PARAM="/clawless/clients/${CLIENT_SLUG}"
+CLIENT_VALUE="$(jq -cn --arg name "$CLIENT_NAME" '{"client_name": $name}')"
+
+if aws ssm put-parameter \
+     --name "$CLIENT_PARAM" \
+     --type "String" \
+     --value "$CLIENT_VALUE" \
+     --region "${REGION}" 2>/dev/null; then
+  echo "Client namespace '${CLIENT_SLUG}' created."
+else
+  # Parameter exists — verify it belongs to the same client
+  EXISTING_CLIENT=$(aws ssm get-parameter \
+    --name "$CLIENT_PARAM" \
+    --region "${REGION}" \
+    --query 'Parameter.Value' \
+    --output text | jq -r '.client_name')
+  if [[ "$EXISTING_CLIENT" != "$CLIENT_NAME" ]]; then
+    echo "ERROR: Client slug '${CLIENT_SLUG}' is already taken by '${EXISTING_CLIENT}'." >&2
+    echo "       Choose a different client name, or use '${EXISTING_CLIENT}' to add an agent to that client." >&2
+    exit 1
+  fi
+  echo "Client namespace '${CLIENT_SLUG}' already exists (${EXISTING_CLIENT}) — adding agent."
+fi
+
+# ── Write agent record ────────────────────────────────────────────────────────
+AGENT_VALUE="$(jq -cn \
   --arg agent_name     "$AGENT_NAME" \
   --arg agent_channel  "$CHANNEL" \
   --argjson channel_config "$CHANNEL_CONFIG" \
   '{
-    display_name:   $display_name,
-    active:         true,
     agent_name:     $agent_name,
+    active:         true,
     agent_channel:  $agent_channel,
     channel_config: $channel_config
   }')"
 
-# ── Merge into existing SSM parameter ────────────────────────────────────────
-EXISTING="$(aws ssm get-parameter \
-  --name "/clawless/clients" \
-  --region "${REGION}" \
-  --query Parameter.Value \
-  --output text 2>/dev/null || echo '{}')"
-
-UPDATED="$(echo "$EXISTING" | jq \
-  --arg slug "$SLUG" \
-  --argjson entry "$CLIENT_JSON" \
-  '. + {($slug): $entry}')"
-
 aws ssm put-parameter \
-  --name "/clawless/clients" \
-  --type "String" \
-  --value "$UPDATED" \
+  --name "/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}" \
+  --type "SecureString" \
+  --value "$AGENT_VALUE" \
   --overwrite \
   --region "${REGION}"
 
 hr
-echo "Client '${SLUG}' added to /clawless/clients."
+echo "Agent '${AGENT_NAME}' registered at /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}."
+echo "Resource slug: ${CLIENT_SLUG}-${AGENT_SLUG}"
 hr

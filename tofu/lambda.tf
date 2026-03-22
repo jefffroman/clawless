@@ -172,19 +172,19 @@ resource "aws_lambda_function" "lifecycle" {
 }
 
 # ── EventBridge Rule ──────────────────────────────────────────────────────────
-# Fires on any Create/Update to /clawless/clients — covers add, remove,
-# pause, and resume (all write to this parameter via their respective scripts).
+# Fires on any Create/Update to any parameter under /clawless/clients/ —
+# covers agent add, remove, pause, and resume (client and agent records).
 
 resource "aws_cloudwatch_event_rule" "clients_change" {
   name        = "clawless-clients-change"
-  description = "Trigger lifecycle Lambda on /clawless/clients SSM changes"
+  description = "Trigger lifecycle Lambda on /clawless/clients/* SSM changes"
 
   event_pattern = jsonencode({
-    source      = ["aws.ssm"]
+    source        = ["aws.ssm"]
     "detail-type" = ["Parameter Store Change"]
     detail = {
-      name      = ["/clawless/clients"]
-      operation = ["Update", "Create"]
+      name      = [{ prefix = "/clawless/clients/" }]
+      operation = ["Update", "Create", "Delete"]
     }
   })
 

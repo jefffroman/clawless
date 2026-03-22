@@ -1,6 +1,6 @@
 ---
 # Agent identity — overridden by storefront at signup time
-agent_name:    "{{ client_slug }}"
+agent_name:    "{{ agent_slug }}"
 agent_style:   "assistant"
 agent_channel: "Telegram"
 

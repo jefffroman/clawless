@@ -1,10 +1,10 @@
-variable "client_slug" {
-  description = "Short unique identifier for this client (alphanumeric + hyphens). Used in all resource names."
+variable "agent_slug" {
+  description = "Short unique identifier for this agent (alphanumeric + hyphens, format: {client}-{agent}). Used in all resource names."
   type        = string
 }
 
-variable "display_name" {
-  description = "Human-readable client name used in IAM tags."
+variable "client_name" {
+  description = "Human-readable client (customer) name used in tags."
   type        = string
 }
 
@@ -31,7 +31,7 @@ variable "golden_snapshot_name" {
 }
 
 variable "backup_bucket" {
-  description = "Shared S3 backup bucket name. Client workspace is synced to clients/{slug}/workspace/ within this bucket."
+  description = "Shared S3 backup bucket name. Agent workspace is synced to agents/{slug}/workspace/ within this bucket."
   type        = string
 }
 
@@ -71,7 +71,7 @@ variable "bedrock_model" {
 }
 
 variable "is_new" {
-  description = "True for clients being provisioned for the first time. Uses golden snapshot (or blueprint) instead of the pause snapshot. False (default) assumes a pause snapshot exists and errors if it does not."
+  description = "True for agents being provisioned for the first time. Uses golden snapshot (or blueprint) instead of the pause snapshot. False (default) assumes a pause snapshot exists and errors if it does not."
   type        = bool
   default     = false
 }
