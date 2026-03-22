@@ -58,11 +58,12 @@ def lambda_handler(event, context):
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    # Post-apply: delete pause snapshots for agents that were just resumed.
-    # Idempotent — skips if no snapshot exists.
+    # Post-apply: delete pause snapshots and orphaned SSM instances for
+    # agents that are active. Both operations are idempotent.
     for slug, cfg in agents.items():
         if cfg.get("active", True):
             _maybe_delete_pause_snapshot(slug)
+            _deregister_offline_instances(slug)
 
     return {"status": "success"}
 
@@ -176,6 +177,40 @@ def _maybe_delete_pause_snapshot(agent_path):
         print(f"[resume:{slug}] snapshot deleted")
     except ClientError as e:
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
+
+
+def _deregister_offline_instances(agent_path):
+    """Deregister offline managed instances for this agent's IAM role (orphan cleanup).
+
+    Each pause/resume cycle creates a new MI ID, leaving the previous one
+    orphaned in SSM. This sweeps them after a successful resume.
+
+    Only acts if at least one instance is already Online — avoids racing with
+    a freshly booting instance that hasn't sent its first ping yet. Orphans
+    that survive this run will be caught on the next lifecycle event.
+    """
+    slug = _resource_slug(agent_path)
+    role_name = f"clawless-{slug}-ssm"
+
+    all_instances = []
+    paginator = ssm.get_paginator("describe_instance_information")
+    for page in paginator.paginate(Filters=[{"Key": "IamRole", "Values": [role_name]}]):
+        all_instances.extend(page["InstanceInformationList"])
+
+    online  = [i for i in all_instances if i["PingStatus"] == "Online"]
+    offline = [i for i in all_instances if i["PingStatus"] != "Online"]
+
+    if not online:
+        print(f"[cleanup:{slug}] no online instance yet — skipping orphan deregistration")
+        return
+
+    for instance in offline:
+        mi_id = instance["InstanceId"]
+        print(f"[cleanup:{slug}] deregistering orphaned instance {mi_id}")
+        try:
+            ssm.deregister_managed_instance(InstanceId=mi_id)
+        except ClientError as e:
+            print(f"[cleanup:{slug}] WARNING: failed to deregister {mi_id}: {e}")
 
 
 def _backup_agent_to_shared(agent_path, account_id):
