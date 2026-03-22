@@ -64,7 +64,7 @@ INSTANCE_ID=""
 for i in $(seq 1 24); do
   INSTANCE_ID=$(aws ssm describe-instance-information \
     --filters "Key=IamRole,Values=clawless-${SLUG}-ssm" \
-    --query 'InstanceInformationList[0].InstanceId' \
+    --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" \
     --output text --region "$REGION" 2>/dev/null || true)
   [[ -n "$INSTANCE_ID" && "$INSTANCE_ID" != "None" ]] && break
   sleep 15
