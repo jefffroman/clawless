@@ -6,7 +6,7 @@
 
 # Terraform / OpenTofu
 tofu/.tofu/
-tofu/.terraform/
+**/.terraform/
 tofu/terraform.tfstate
 tofu/terraform.tfstate.backup
 tofu/*.tfvars
