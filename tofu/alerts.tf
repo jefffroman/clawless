@@ -29,20 +29,20 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 }
 
 # ── Backup Failure Alarms ─────────────────────────────────────────────────────
-# One alarm per client. The backup script publishes BackupFailure=1 on failure,
+# One alarm per agent. The backup script publishes BackupFailure=1 on failure,
 # BackupFailure=0 on success. Missing data is treated as OK — if the instance
 # is inactive, no metrics are expected.
 
 resource "aws_cloudwatch_metric_alarm" "backup_failure" {
-  for_each = local.clients
+  for_each = local.agents
 
-  alarm_name        = "clawless-${each.key}-backup-failure"
-  alarm_description = "Workspace backup to S3 failed for client ${each.key}"
+  alarm_name        = "clawless-${replace(each.key, "/", "-")}-backup-failure"
+  alarm_description = "Workspace backup to S3 failed for agent ${each.key}"
   namespace         = "Clawless/Backup"
   metric_name       = "BackupFailure"
 
   dimensions = {
-    ClientSlug = each.key
+    AgentSlug = replace(each.key, "/", "-")
   }
 
   statistic           = "Sum"
