@@ -7,10 +7,10 @@ memory/
 
 # Terraform / OpenTofu
 **/.terraform/
-tofu/terraform.tfstate
-tofu/terraform.tfstate.backup
-tofu/*.tfvars
-tofu/backend.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfvars
+**/backend.hcl
 
 # Project notes — excluded from public repo; live in the private platform repo
 CLAUDE.md
