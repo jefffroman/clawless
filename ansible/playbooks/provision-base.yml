@@ -61,6 +61,12 @@
         creates: /var/lib/openclaw/workspace/vector_memory/venv/bin/activate
       become_user: ubuntu
 
+    - name: Install InboxAPI MCP server globally
+      community.general.npm:
+        name: "@inboxapi/cli"
+        global: true
+        state: latest
+
     - name: Pre-install memory Python packages
       ansible.builtin.pip:
         name:

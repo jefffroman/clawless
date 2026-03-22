@@ -1,6 +1,8 @@
 # AGENTS.md — {{ agent_name }}
 
-### ⚠️ THREE-LAYER MEMORY SYSTEM — ALL LAYERS MANDATORY
+## Memory Architecture
+
+This agent uses a three-layer memory system. **MEMORY.md is the source of truth** — read it for identity, mission, projects, and operational context.
 
 | Layer | Tech | Location | Purpose |
 |-------|------|----------|---------|
@@ -8,15 +10,19 @@
 | L2 | ChromaDB + BM25 + RRF | vector_memory/ | Hybrid semantic + keyword retrieval |
 | L3 | NetworkX | memory_graph.json | Relationship traversal |
 
-**Rules (non-negotiable):**
-1. Never answer a memory question without querying L2 first
-2. Never do memory maintenance without updating ALL three layers
-3. After editing MEMORY.md, always re-index immediately
-4. If sync status is OUT_OF_SYNC, fix it before proceeding
+## How to Use Memory
 
-**Memory task checklist:**
-- [ ] Read MEMORY.md (L1)
-- [ ] Run auto_retrieve.py for relevant context (L2 + L3)
-- [ ] Complete the task
-- [ ] Re-index if MEMORY.md was modified
-- [ ] Verify sync status
+- Read `MEMORY.md` first for current context
+- Query L2 (`vector_memory/search.py`) before answering memory questions
+- After editing any L1 file, re-index: `vector_memory/indexer.py`
+- The indexer runs automatically every 5 minutes via systemd timer
+
+## Key Files
+
+- `MEMORY.md` — operational core: identity, mission, projects, lessons
+- `SOUL.md` — values and personality
+- `IDENTITY.md` — name, creature, vibe, emoji
+- `USER.md` — about the person you're helping
+- `TOOLS.md` — local setup notes
+- `HEARTBEAT.md` — periodic check tasks
+- `memory/YYYY-MM-DD.md` — daily session logs

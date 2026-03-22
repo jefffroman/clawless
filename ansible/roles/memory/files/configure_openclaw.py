@@ -30,6 +30,22 @@ MEMORY_SEARCH_BLOCK = {
     }
 }
 
+# MCP servers available to the agent.
+MCP_SERVERS = {
+    "inboxapi": {
+        "command": "inboxapi",
+        "args": [],
+    }
+}
+
+# Enable full tool access. Without this the agent may boot with no shell/file
+# access (the "messaging" profile trap — see openclaw issue #33225).
+TOOLS_BLOCK = {"profile": "full"}
+
+# Per-peer session isolation: each person who DMs the bot gets their own
+# conversation thread. Safe default given dmPolicy: "open" on the Telegram channel.
+SESSION_BLOCK = {"dmScope": "per-peer"}
+
 
 def patch_config():
     with open(CONFIG_PATH) as f:
@@ -44,6 +60,19 @@ def patch_config():
     if MODEL:
         config.setdefault("agents", {}).setdefault("defaults", {}).setdefault("model", {})["primary"] = MODEL
         print(f"agents.defaults.model.primary patched to {MODEL}")
+
+    # Always patch tools and session — these are safe idempotent defaults.
+    existing_tools = config.get("tools", {})
+    config["tools"] = {**existing_tools, **TOOLS_BLOCK}
+    print(f"tools patched to profile={TOOLS_BLOCK['profile']}")
+
+    existing_session = config.get("session", {})
+    config["session"] = {**existing_session, **SESSION_BLOCK}
+    print(f"session.dmScope patched to {SESSION_BLOCK['dmScope']}")
+
+    existing_mcp = config.get("mcpServers", {})
+    config["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
+    print(f"mcpServers patched: {list(MCP_SERVERS.keys())}")
 
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields

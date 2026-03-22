@@ -1,6 +1,6 @@
 .DS_Store
 .claude/
-memory/
+/memory/
 *.env
 *.env.*
 !*.env.j2
