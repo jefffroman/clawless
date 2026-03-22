@@ -184,7 +184,7 @@ resource "aws_cloudwatch_event_rule" "clients_change" {
     "detail-type" = ["Parameter Store Change"]
     detail = {
       name      = [{ prefix = "/clawless/clients/" }]
-      operation = ["Update", "Create"]
+      operation = ["Update", "Create", "Delete"]
     }
   })
 
