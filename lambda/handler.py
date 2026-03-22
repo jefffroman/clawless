@@ -82,7 +82,7 @@ def _get_agents():
     client_records = {}  # {client_slug: {client_name: ...}}
     agent_records = {}   # {agent_path: {agent_name, active, ...}}
 
-    for page in paginator.paginate(Path="/clawless/clients", Recursive=True):
+    for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
         for param in page["Parameters"]:
             parts = param["Name"].split("/")
             # /clawless/clients/{client_slug}              → 4 parts

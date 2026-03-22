@@ -129,7 +129,7 @@ AGENT_VALUE="$(jq -cn \
 
 aws ssm put-parameter \
   --name "/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}" \
-  --type "String" \
+  --type "SecureString" \
   --value "$AGENT_VALUE" \
   --overwrite \
   --region "${REGION}"
