@@ -4,8 +4,9 @@
 *.env.*
 !*.env.j2
 
-# Terraform
+# Terraform / OpenTofu
 tofu/.tofu/
+tofu/.terraform/
 tofu/terraform.tfstate
 tofu/terraform.tfstate.backup
 tofu/*.tfvars
