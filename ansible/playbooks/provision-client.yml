@@ -52,6 +52,7 @@
       ansible.builtin.setup:
 
   roles:
+    - role: searxng
     - role: openclaw
     - role: backup
     - role: memory
@@ -59,7 +60,7 @@
   post_tasks:
     - name: Mark instance as provisioned
       ansible.builtin.file:
-        path: /var/lib/openclaw/.provisioned
+        path: /home/ubuntu/.openclaw/.provisioned
         state: touch
         modification_time: preserve
         access_time: preserve

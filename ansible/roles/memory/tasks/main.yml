@@ -100,6 +100,7 @@
   environment:
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
     OPENCLAW_MODEL: "{{ bedrock_model | default('bedrock/us.amazon.nova-lite-v1:0') }}"
+
   become_user: "{{ openclaw_user }}"
   notify: Restart openclaw
 
