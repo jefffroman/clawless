@@ -43,7 +43,8 @@
       [Service]
       Type=oneshot
       ExecStart=/usr/local/bin/clawless-backup
-      User={{ openclaw_user | default('openclaw') }}
+      User={{ agent_user }}
+      Environment=AWS_EC2_METADATA_DISABLED=true AWS_SDK_LOAD_CONFIG=1
   notify: Reload systemd daemon
 
 - name: Deploy backup systemd timer unit

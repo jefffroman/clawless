@@ -102,22 +102,22 @@
         XDG_RUNTIME_DIR: "/run/user/1000"
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
 
-    # Pre-create workspace vector_memory dir so Python venv install has a home.
+    # Pre-create workspace in agent user's home so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
       ansible.builtin.file:
-        path: /home/ubuntu/.openclaw/workspace/vector_memory
+        path: /home/agent/vector_memory
         state: directory
-        owner: ubuntu
-        group: ubuntu
+        owner: agent
+        group: agent
         mode: "0750"
 
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages
       ansible.builtin.command:
-        cmd: python3 -m venv /home/ubuntu/.openclaw/workspace/vector_memory/venv
-        creates: /home/ubuntu/.openclaw/workspace/vector_memory/venv/bin/activate
-      become_user: ubuntu
+        cmd: python3 -m venv /home/agent/vector_memory/venv
+        creates: /home/agent/vector_memory/venv/bin/activate
+      become_user: agent
 
     - name: Pre-install memory Python packages
       ansible.builtin.pip:
@@ -126,9 +126,9 @@
           - sentence-transformers
           - networkx
           - rank-bm25
-        virtualenv: /home/ubuntu/.openclaw/workspace/vector_memory/venv
+        virtualenv: /home/agent/vector_memory/venv
         state: present
-      become_user: ubuntu
+      become_user: agent
 
     # Pre-install SearXNG in its venv so provision-client.yml skips the slow pip download.
     - name: Create SearXNG venv

@@ -5,4 +5,5 @@ openclaw_config_dir:     /etc/openclaw
 openclaw_env_file:       /etc/openclaw/openclaw.env
 openclaw_service_name:   openclaw-gateway
 openclaw_user:           ubuntu
-openclaw_workspace_dir:  /home/ubuntu/.openclaw/workspace
+agent_user:              agent
+openclaw_workspace_dir:  /home/agent
