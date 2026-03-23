@@ -202,13 +202,13 @@ Use `--force` to skip the confirmation prompt.
 Pausing snapshots the instance and destroys it. You pay only for the snapshot (~$0.05/GB) instead of the running instance.
 
 ```bash
-./scripts/pause.sh <client-slug> <agent-slug>
+./scripts/pause-agent.sh <client-slug> <agent-slug>
 ```
 
 ### Resume a paused agent
 
 ```bash
-./scripts/resume.sh <client-slug> <agent-slug>
+./scripts/resume-agent.sh <client-slug> <agent-slug>
 ```
 
 The instance is recreated from its pause snapshot. Workspace is restored from S3. No re-provisioning — the instance boots fully configured.

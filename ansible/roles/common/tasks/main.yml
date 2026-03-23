@@ -1,6 +1,14 @@
 ---
-# Addresses CONTEXT.md security note: "Lightsail blueprint shipped with outdated kernel;
-# run apt upgrade post-provision."
+# Wait for any boot-time unattended-upgrades to finish before touching apt.
+# Fresh Ubuntu instances run unattended-upgr immediately; competing for the
+# dpkg lock causes hard failures.
+- name: Wait for unattended-upgrades to finish
+  ansible.builtin.shell:
+    cmd: |
+      while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        sleep 5
+      done
+  changed_when: false
 
 - name: Update apt cache
   ansible.builtin.apt:

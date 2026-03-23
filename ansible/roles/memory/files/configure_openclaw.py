@@ -44,14 +44,18 @@ MCP_SERVERS = {
 # access (the "messaging" profile trap — see openclaw issue #33225).
 TOOLS_BLOCK = {"profile": "full"}
 
-# SearXNG web search — local container on loopback, no API key required.
+# SearXNG web search — local instance, no API key required.
+# Default baseUrl assumes sandbox.mode=off (tools run on host, localhost works).
+# If sandbox is enabled, switch SEARXNG_HOST to host.docker.internal or 172.17.0.1
+# and set sandbox.docker.network to bridge.
+SEARXNG_HOST = os.environ.get("SEARXNG_HOST", "127.0.0.1")
 SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
 WEB_SEARCH_BLOCK = {
     "web": {
         "search": {
             "enabled": True,
             "provider": "searxng",
-            "searxng": {"baseUrl": f"http://127.0.0.1:{SEARXNG_PORT}"},
+            "searxng": {"baseUrl": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"},
         }
     }
 }
