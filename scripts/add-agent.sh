@@ -56,20 +56,16 @@ CHANNEL="$(echo "$CHANNEL" | tr '[:upper:]' '[:lower:]')"
 
 case "$CHANNEL" in
   telegram)
-    echo "Create a bot via @BotFather on Telegram to get a token."
-    echo "Client: message @userinfobot on Telegram (send 'Hi') and copy the numeric ID it replies with."
-    ask BOT_TOKEN "Bot token"
-    ask PEER_ID "Client's Telegram numeric user ID"
+    ask BOT_TOKEN "Agent Bot token"
+    ask PEER_ID "Client Telegram numeric user ID"
     CHANNEL_CONFIG="$(jq -cn \
       --arg token "$BOT_TOKEN" \
       --arg peer  "$PEER_ID" \
       '{"enabled": true, "botToken": $token, "dmPolicy": "allowlist", "allowFrom": [$peer]}')"
     ;;
   discord)
-    echo "Create a bot at discord.com/developers and copy the bot token."
-    echo "Client: find your numeric Discord user ID via Settings → Advanced → Developer Mode, then right-click your name."
-    ask BOT_TOKEN "Bot token"
-    ask PEER_ID "Client's Discord numeric user ID"
+    ask BOT_TOKEN "Agent Bot token"
+    ask PEER_ID "Client Discord numeric user ID"
     CHANNEL_CONFIG="$(jq -cn \
       --arg token "$BOT_TOKEN" \
       --arg peer  "$PEER_ID" \
@@ -77,10 +73,9 @@ case "$CHANNEL" in
     ;;
   slack)
     echo "Create a Slack app with socket mode enabled."
-    echo "Client: find your Slack user ID via your profile → More → Copy member ID (starts with U)."
     ask APP_TOKEN "App token (xapp-...)"
-    ask BOT_TOKEN "Bot token (xoxb-...)"
-    ask PEER_ID "Client's Slack member ID (U...)"
+    ask BOT_TOKEN "Agent Bot token (xoxb-...)"
+    ask PEER_ID "Client Slack member ID (U...)"
     CHANNEL_CONFIG="$(jq -cn \
       --arg app  "$APP_TOKEN" \
       --arg bot  "$BOT_TOKEN" \

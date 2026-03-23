@@ -123,15 +123,25 @@
     mode: "0640"
   notify: Restart openclaw
 
-- name: Configure OpenClaw systemd unit to load environment file
-  ansible.builtin.lineinfile:
-    path: "/etc/systemd/system/{{ openclaw_service_name }}.service"
-    regexp: "^EnvironmentFile="
-    line: "EnvironmentFile={{ openclaw_env_file }}"
-    insertafter: "^\\[Service\\]"
-    backup: true
+- name: Ensure openclaw-gateway user service drop-in directory exists
+  ansible.builtin.file:
+    path: "/home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0755"
+
+- name: Deploy EnvironmentFile drop-in for openclaw-gateway
+  ansible.builtin.copy:
+    dest: "/home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf"
+    content: |
+      [Service]
+      EnvironmentFile={{ openclaw_env_file }}
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
   notify:
-    - Reload systemd daemon
+    - Reload user systemd daemon
     - Restart openclaw
 
 - name: Ensure OpenClaw service is enabled and running
@@ -139,6 +149,10 @@
     name: "{{ openclaw_service_name }}"
     enabled: true
     state: started
+    scope: user
+  become_user: "{{ openclaw_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/1000"
 
 - name: Verify gateway is listening on loopback
   ansible.builtin.wait_for:

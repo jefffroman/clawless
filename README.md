@@ -49,8 +49,9 @@ EventBridge → Lifecycle Lambda (tofu apply)
 | [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) | >= 2.14 | `brew install ansible` | `pip3 install ansible` |
 | [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | >= 2.x | `brew install awscli` | official Linux installer (see link) |
 | [Docker](https://docs.docker.com/get-docker/) | >= 24 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | `apt install docker.io` |
-| Python 3 | >= 3.10 | pre-installed | `apt install python3` |
+| Python 3 | >= 3.10 | `brew install python` | `apt install python3` |
 | jq | any | `brew install jq` | `apt install jq` |
+| openssl | any | `brew install openssl` | pre-installed |
 
 ### AWS Credentials
 

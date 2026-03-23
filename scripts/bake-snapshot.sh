@@ -177,6 +177,10 @@ until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
   sleep 5
 done
 
+log "Waiting for cloud-init to complete (blueprint setup)..."
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@$INSTANCE_IP" \
+  "sudo cloud-init status --wait" || true
+
 # ── Run base provisioning playbook ───────────────────────────────────────────
 
 log "Running provision-base.yml..."
