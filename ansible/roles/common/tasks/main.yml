@@ -26,6 +26,17 @@
       - python3-venv
     state: present
 
+- name: Add NodeSource repository for Node.js 22
+  ansible.builtin.shell:
+    cmd: curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    creates: /etc/apt/sources.list.d/nodesource.list
+
+- name: Install Node.js 22
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+
 - name: Install AWS CLI v2 via snap
   community.general.snap:
     name: aws-cli

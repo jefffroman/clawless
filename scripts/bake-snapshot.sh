@@ -52,7 +52,7 @@ hr
 
 # ── Read blueprint and bundle from tfvars ─────────────────────────────────────
 
-BLUEPRINT_ID="openclaw_ls_1_0"
+BLUEPRINT_ID="ubuntu_24_04"
 BUNDLE_ID="medium_3_0"
 if [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
   _bp=$(grep '^lightsail_blueprint_id' "$TOFU_DIR/terraform.tfvars" 2>/dev/null \

@@ -1,0 +1,46 @@
+# SearXNG settings — managed by Ansible. Do not edit manually.
+# Provides free web search for OpenClaw agents via the JSON API.
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "clawless"
+
+server:
+  secret_key: "{{ searxng_secret_key }}"
+  bind_address: "127.0.0.1"
+  port: 8080
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+  # json format is required — OpenClaw hits /search?format=json
+  formats:
+    - html
+    - json
+
+# Engine selection tuned for cloud IPs (Lightsail).
+# Google is disabled: aggressively CAPTCHAs cloud IP ranges, causing silent failures.
+# Brave + DuckDuckGo + Bing give reliable broad coverage; Wikipedia adds factual depth.
+engines:
+  - name: google
+    engine: google
+    disabled: true
+  - name: bing
+    engine: bing
+    disabled: false
+  - name: brave
+    engine: brave
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+  - name: reddit
+    engine: reddit
+    disabled: false
+  - name: wikipedia
+    engine: wikipedia
+    disabled: false
