@@ -72,18 +72,15 @@ SESSION_BLOCK = {"dmScope": "per-peer"}
 
 # Sandbox: tools run in a Docker container as the agent UID.
 # The gateway (openclaw_user) manages the container; tool execution is isolated.
-# host-gateway lets the container reach host services (SearXNG on loopback).
+# Valid modes: "off", "non-main", "all".
 AGENT_UID = os.environ.get("AGENT_UID", "")
 SANDBOX_BLOCK = {
-    "mode": "docker",
+    "mode": "all",
     "docker": {
         "network": "bridge",
-        "extraArgs": ["--add-host=host.docker.internal:host-gateway"],
+        "user": AGENT_UID,
     },
 } if AGENT_UID else None
-
-if AGENT_UID:
-    SANDBOX_BLOCK["docker"]["user"] = AGENT_UID
 
 
 def patch_config():
@@ -95,11 +92,17 @@ def patch_config():
     print(f"Backed up to {backup}")
 
     defaults = config.setdefault("agents", {}).setdefault("defaults", {})
-    agent_main = config.setdefault("agents", {}).setdefault("main", {})
+
+    # Clean up stale keys from previous configure_openclaw.py runs.
+    for stale_key in ("workspaceDir", "mcpServers", "sandbox"):
+        config.pop(stale_key, None)
+    config.get("agents", {}).pop("main", None)
+    defaults.pop("mcpServers", None)
+    defaults.pop("workspaceDir", None)
 
     if WORKSPACE_PATH:
-        agent_main["workspaceDir"] = WORKSPACE_PATH
-        print(f"agents.main.workspaceDir patched to {WORKSPACE_PATH}")
+        defaults["workspace"] = WORKSPACE_PATH
+        print(f"agents.defaults.workspace patched to {WORKSPACE_PATH}")
 
     defaults.update(MEMORY_SEARCH_BLOCK)
 
@@ -108,7 +111,6 @@ def patch_config():
         print(f"agents.defaults.model.primary patched to {MODEL}")
 
     # tools, session, channels are valid at root level.
-    # mcpServers and sandbox go under agents.defaults.
     existing_tools = config.get("tools", {})
     config["tools"] = {**existing_tools, **TOOLS_BLOCK, **WEB_SEARCH_BLOCK}
     print(f"tools patched: profile={TOOLS_BLOCK['profile']}, web.search.provider=searxng")
@@ -117,14 +119,15 @@ def patch_config():
     config["session"] = {**existing_session, **SESSION_BLOCK}
     print(f"session.dmScope patched to {SESSION_BLOCK['dmScope']}")
 
-    existing_mcp = defaults.get("mcpServers", {})
-    defaults["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
-    print(f"mcpServers patched: {list(MCP_SERVERS.keys())}")
+    # MCP servers go under provider.mcpServers.
+    existing_mcp = config.setdefault("provider", {}).get("mcpServers", {})
+    config["provider"]["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
+    print(f"provider.mcpServers patched: {list(MCP_SERVERS.keys())}")
 
     if SANDBOX_BLOCK:
         existing_sandbox = defaults.get("sandbox", {})
         defaults["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
-        print(f"sandbox patched: mode=docker, user={AGENT_UID}")
+        print(f"sandbox patched: mode=all, user={AGENT_UID}")
 
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields
