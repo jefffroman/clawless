@@ -184,6 +184,24 @@ resource "aws_iam_role_policy" "cloudwatch_backup" {
   policy = data.aws_iam_policy_document.cloudwatch_backup.json
 }
 
+# ── Self-pause ────────────────────────────────────────────────────────────────
+# Agent can set its own /active parameter to "false" to trigger a pause.
+# Scoped to exactly one parameter — no wildcards, no delete.
+
+data "aws_iam_policy_document" "self_pause" {
+  statement {
+    sid       = "SelfPause"
+    effect    = "Allow"
+    actions   = ["ssm:PutParameter"]
+    resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/clawless/clients/${var.agent_slug}/active"]
+  }
+}
+
+resource "aws_iam_role_policy" "self_pause" {
+  name   = "self-pause"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.self_pause.json
+}
 
 # ── SSM Activation ────────────────────────────────────────────────────────────
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# resume.sh — Resume a paused agent by setting active=true in SSM.
+# resume-agent.sh — Resume a paused agent by setting its /active parameter to "true".
 # The lifecycle Lambda discovers the pause snapshot, restores the instance,
 # and cleans up the snapshot automatically.
 #
-# Usage: ./scripts/resume.sh <client-slug> <agent-slug> [--region <region>]
-# Example: ./scripts/resume.sh zalman wingmate
+# Usage: ./scripts/resume-agent.sh <client-slug> <agent-slug> [--region <region>]
+# Example: ./scripts/resume-agent.sh zalman wingmate
 
 set -euo pipefail
 
@@ -34,6 +34,7 @@ if [[ -z "$REGION" ]]; then
   REGION="${REGION:-us-east-1}"
 fi
 
+ACTIVE_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}/active"
 AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 RESOURCE_SLUG="${CLIENT_SLUG}-${AGENT_SLUG}"
 
@@ -43,28 +44,32 @@ log "  Region: $REGION"
 hr
 
 CURRENT=$(aws ssm get-parameter \
-  --name "$AGENT_PARAM" \
-  --with-decryption \
+  --name "$ACTIVE_PARAM" \
   --query 'Parameter.Value' \
   --output text --region "$REGION" 2>/dev/null || true)
 
 if [[ -z "$CURRENT" ]]; then
   log "ERROR: agent '${CLIENT_SLUG}/${AGENT_SLUG}' not found in SSM" >&2; exit 1
 fi
-if [[ "$(echo "$CURRENT" | jq -r '.active != false')" == "true" ]]; then
+if [[ "$CURRENT" == "true" ]]; then
   log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already active" >&2; exit 1
 fi
 
-UPDATED=$(echo "$CURRENT" | jq -c '.active = true')
+log "Updating ${ACTIVE_PARAM} → true..."
+aws ssm put-parameter \
+  --name "$ACTIVE_PARAM" \
+  --type String \
+  --overwrite \
+  --value "true" \
+  --region "$REGION" >/dev/null
 
-log "Invoking Step Functions (SSM write + lifecycle)..."
+log "Invoking Step Functions (lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
   --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
 SFN_INPUT=$(jq -cn \
   --arg name "$AGENT_PARAM" \
   --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg val  "$UPDATED" \
-  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update", ssm_value: $val}')
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update"}')
 aws stepfunctions start-execution \
   --state-machine-arn "$SFN_ARN" \
   --input "$SFN_INPUT" \

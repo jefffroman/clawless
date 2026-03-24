@@ -15,6 +15,18 @@
     openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
     openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw/workspace"
 
+# ── Self-pause helper ─────────────────────────────────────────────────────────
+# Deployed to /usr/local/bin so the agent can pause itself without knowing
+# the SSM parameter path. IAM policy scopes ssm:PutParameter to exactly
+# this agent's /active parameter.
+- name: Deploy self-pause helper script
+  ansible.builtin.template:
+    src: clawless-pause-self.j2
+    dest: /usr/local/bin/clawless-pause-self
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Deploy credential_process helper script
   ansible.builtin.template:
     src: clawless-creds-helper.j2

@@ -57,7 +57,13 @@ if [[ "$FORCE" == false ]]; then
   fi
 fi
 
-log "Invoking Step Functions (SSM delete + lifecycle)..."
+# Delete agent record, active flag, and any error state
+log "Deleting ${AGENT_PARAM}..."
+aws ssm delete-parameter --name "$AGENT_PARAM" --region "$REGION"
+aws ssm delete-parameter --name "${AGENT_PARAM}/active" --region "$REGION" 2>/dev/null || true
+aws ssm delete-parameter --name "${AGENT_PARAM}/error" --region "$REGION" 2>/dev/null || true
+
+log "Invoking Step Functions (lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
   --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
 SFN_INPUT=$(jq -cn \
