@@ -43,7 +43,22 @@ data "aws_iam_policy_document" "ssm_assume" {
     }
   }
 
-
+  # Allow the role to self-assume for credential_process (role chaining).
+  # SSM gives the instance temporary creds; the creds helper re-assumes
+  # the same role to produce credential_process JSON with Expiration.
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-ssm"]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "bedrock" {
@@ -99,6 +114,20 @@ resource "aws_iam_role" "ssm" {
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.ssm.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy" "self_assume" {
+  name = "self-assume"
+  role = aws_iam_role.ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sts:AssumeRole"
+      Resource = aws_iam_role.ssm.arn
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "bedrock" {
