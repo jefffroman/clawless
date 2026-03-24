@@ -25,6 +25,15 @@
     - role: common
 
   post_tasks:
+    # Write a marker so instances know which golden snapshot they came from.
+    - name: Write golden snapshot marker
+      ansible.builtin.copy:
+        content: "{{ golden_snapshot_name | default('unknown') }}\n"
+        dest: /etc/clawless-golden-id
+        owner: root
+        group: root
+        mode: "0644"
+
     # Install ansible-core so the instance can self-provision via user_data at boot.
     - name: Install ansible-core
       ansible.builtin.apt:

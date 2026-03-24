@@ -187,6 +187,7 @@ log "Running provision-base.yml..."
 cd "$ANSIBLE_DIR"
 ansible-playbook \
   -i "$INSTANCE_IP," \
+  -e "golden_snapshot_name=$SNAPSHOT_NAME" \
   playbooks/provision-base.yml
 
 # ── Clear SSM registration before snapshot ────────────────────────────────────
