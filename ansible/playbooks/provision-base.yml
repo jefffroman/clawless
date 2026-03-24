@@ -21,6 +21,12 @@
     - name: Gather facts
       ansible.builtin.setup:
 
+    - name: Resolve ubuntu user UID
+      ansible.builtin.command:
+        cmd: id -u ubuntu
+      register: ubuntu_uid_result
+      changed_when: false
+
     # Write marker early so we can identify the snapshot even if later tasks fail.
     - name: Write golden snapshot marker
       ansible.builtin.copy:
@@ -108,7 +114,7 @@
         creates: /home/ubuntu/.openclaw/openclaw.json
       become_user: ubuntu
       environment:
-        XDG_RUNTIME_DIR: "/run/user/{{ lookup('pipe', 'id -u ubuntu') }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ ubuntu_uid_result.stdout }}"
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
 
     # Pre-create workspace in agent user's home so Python venv install has a home.
