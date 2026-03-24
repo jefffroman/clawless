@@ -103,7 +103,7 @@
 - name: Patch OpenClaw config for memory search and model
   ansible.builtin.command:
     cmd: >
-      {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
+      python3
       {{ openclaw_workspace_dir }}/vector_memory/configure_openclaw.py
   environment:
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
@@ -116,7 +116,7 @@
 - name: Patch OpenClaw config for channel integration
   ansible.builtin.command:
     cmd: >
-      {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
+      python3
       {{ openclaw_workspace_dir }}/vector_memory/configure_openclaw.py
   environment:
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
