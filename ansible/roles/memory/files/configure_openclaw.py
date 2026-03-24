@@ -55,7 +55,7 @@ WEB_SEARCH_BLOCK = {
         "search": {
             "enabled": True,
             "provider": "searxng",
-            "searxng": {"baseUrl": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"},
+            "baseUrl": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
         }
     }
 }
