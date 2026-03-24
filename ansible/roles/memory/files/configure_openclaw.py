@@ -94,17 +94,21 @@ def patch_config():
     shutil.copy(CONFIG_PATH, backup)
     print(f"Backed up to {backup}")
 
-    if WORKSPACE_PATH:
-        config["workspaceDir"] = WORKSPACE_PATH
-        print(f"workspaceDir patched to {WORKSPACE_PATH}")
+    defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+    agent_main = config.setdefault("agents", {}).setdefault("main", {})
 
-    config.setdefault("agents", {}).setdefault("defaults", {}).update(MEMORY_SEARCH_BLOCK)
+    if WORKSPACE_PATH:
+        agent_main["workspaceDir"] = WORKSPACE_PATH
+        print(f"agents.main.workspaceDir patched to {WORKSPACE_PATH}")
+
+    defaults.update(MEMORY_SEARCH_BLOCK)
 
     if MODEL:
-        config.setdefault("agents", {}).setdefault("defaults", {}).setdefault("model", {})["primary"] = MODEL
+        defaults.setdefault("model", {})["primary"] = MODEL
         print(f"agents.defaults.model.primary patched to {MODEL}")
 
-    # Always patch tools and session — these are safe idempotent defaults.
+    # tools, session, channels are valid at root level.
+    # mcpServers and sandbox go under agents.defaults.
     existing_tools = config.get("tools", {})
     config["tools"] = {**existing_tools, **TOOLS_BLOCK, **WEB_SEARCH_BLOCK}
     print(f"tools patched: profile={TOOLS_BLOCK['profile']}, web.search.provider=searxng")
@@ -113,13 +117,13 @@ def patch_config():
     config["session"] = {**existing_session, **SESSION_BLOCK}
     print(f"session.dmScope patched to {SESSION_BLOCK['dmScope']}")
 
-    existing_mcp = config.get("mcpServers", {})
-    config["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
+    existing_mcp = defaults.get("mcpServers", {})
+    defaults["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
     print(f"mcpServers patched: {list(MCP_SERVERS.keys())}")
 
     if SANDBOX_BLOCK:
-        existing_sandbox = config.get("sandbox", {})
-        config["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
+        existing_sandbox = defaults.get("sandbox", {})
+        defaults["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
         print(f"sandbox patched: mode=docker, user={AGENT_UID}")
 
     if CHANNEL and CHANNEL_CONFIG:
