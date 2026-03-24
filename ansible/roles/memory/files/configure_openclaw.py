@@ -70,6 +70,8 @@ SESSION_BLOCK = {"dmScope": "per-peer"}
 AGENT_UID = os.environ.get("AGENT_UID", "")
 SANDBOX_BLOCK = {
     "mode": "all",
+    "scope": "agent",
+    "workspaceAccess": "rw",
     "docker": {
         "network": "bridge",
         "user": AGENT_UID,
