@@ -97,6 +97,13 @@
     home: /home/agent
     shell: /bin/bash
 
+- name: Pre-create agent Ansible temp directory
+  ansible.builtin.file:
+    path: /home/agent/.ansible/tmp
+    state: directory
+    owner: agent
+    group: agent
+    mode: "0700"
 
 - name: Add openclaw user (ubuntu) to docker and agent groups
   ansible.builtin.user:
