@@ -139,7 +139,8 @@
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
 
     # Build the sandbox-common Docker image so sandbox containers have python3,
-    # nodejs, git, curl, jq. Uses the script bundled with OpenClaw.
+    # nodejs, git, curl, jq. The setup scripts are in the OpenClaw source repo
+    # but not the npm package, so we ship our own Dockerfile.
     - name: Check if sandbox-common image exists
       ansible.builtin.command:
         cmd: docker image inspect openclaw-sandbox-common:bookworm-slim
@@ -147,11 +148,16 @@
       failed_when: false
       changed_when: false
 
+    - name: Copy sandbox-common Dockerfile to instance
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/Dockerfile.sandbox-common"
+        dest: /tmp/Dockerfile.sandbox-common
+        mode: "0644"
+      when: sandbox_image_check.rc != 0
+
     - name: Build openclaw-sandbox-common Docker image
       ansible.builtin.command:
-        cmd: /usr/lib/node_modules/openclaw/scripts/sandbox-common-setup.sh
-      environment:
-        HOME: "{{ openclaw_home }}"
+        cmd: docker build -t openclaw-sandbox-common:bookworm-slim -f /tmp/Dockerfile.sandbox-common /tmp
       when: sandbox_image_check.rc != 0
 
     # Install SearXNG search skill into the agent workspace.
