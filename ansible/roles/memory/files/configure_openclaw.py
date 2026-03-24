@@ -73,6 +73,7 @@ SANDBOX_BLOCK = {
     "scope": "agent",
     "workspaceAccess": "rw",
     "docker": {
+        "image": "openclaw-sandbox-common:bookworm-slim",
         "network": "bridge",
         "user": AGENT_UID,
     },
