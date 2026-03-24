@@ -85,6 +85,7 @@
       Group={{ searxng_user }}
       WorkingDirectory={{ searxng_src }}
       Environment=SEARXNG_SETTINGS_PATH={{ searxng_config_dir }}/settings.yml
+      Environment=PYTHONPATH={{ searxng_src }}
       ExecStart={{ searxng_venv }}/bin/python searx/webapp.py
       Restart=on-failure
       RestartSec=5
