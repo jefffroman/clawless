@@ -114,6 +114,13 @@
     line: "AWS_DEFAULT_REGION={{ openclaw_bedrock_region }}"
   notify: Restart openclaw
 
+- name: Set AWS_PROFILE in env file (triggers SDK config file loading)
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_PROFILE="
+    line: "AWS_PROFILE=default"
+  notify: Restart openclaw
+
 - name: Disable IMDS fallback in env file
   ansible.builtin.lineinfile:
     path: "{{ openclaw_env_file }}"
