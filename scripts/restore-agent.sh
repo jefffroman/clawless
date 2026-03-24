@@ -10,22 +10,30 @@
 #
 # If the SSM entry is also gone, use add-agent.sh to re-register first.
 #
-# Usage: restore-agent.sh --slug <client/agent> [--region <region>]
+# Usage: restore-agent.sh --slug <client/agent> [--region <region>] [--before <datetime>]
+#
+# Options:
+#   --before  Restore workspace as it was before this timestamp (ISO 8601).
+#             Uses S3 versioning to retrieve prior object versions.
+#             Example: --before 2026-03-20T12:00:00Z
+#             Without this flag, restores the latest (current) backup.
 set -euo pipefail
 
 REGION="us-east-1"
 SLUG=""
+BEFORE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug)   SLUG="$2"; shift 2 ;;
     --region) REGION="$2"; shift 2 ;;
+    --before) BEFORE="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$SLUG" ]]; then
-  echo "Usage: restore-agent.sh --slug <client/agent> [--region <region>]" >&2
+  echo "Usage: restore-agent.sh --slug <client/agent> [--region <region>] [--before <datetime>]" >&2
   exit 1
 fi
 
@@ -126,18 +134,81 @@ fi
 # ── Restore workspace from S3 ───────────────────────────────────────────────
 if [[ "$OBJECT_COUNT" -gt 0 ]]; then
   hr
-  echo "Restoring workspace from S3 backup..."
-  aws ssm send-command \
-    --instance-ids "$MI_ID" \
-    --document-name AWS-RunShellScript \
+  if [[ -z "$BEFORE" ]]; then
+    echo "Restoring workspace from latest S3 backup..."
+    aws ssm send-command \
+      --instance-ids "$MI_ID" \
+      --document-name AWS-RunShellScript \
+      --region "$REGION" \
+      --parameters "commands=[
+        \"aws s3 sync s3://${BACKUP_BUCKET}/${BACKUP_PREFIX} /home/agent/ --no-progress\",
+        \"chown -R agent:agent /home/agent\",
+        \"echo 'Workspace restored from latest S3 backup'\"
+      ]" \
+      --comment "restore-agent: S3 workspace recovery (latest)" \
+      --output text --query 'Command.CommandId'
+  else
+    echo "Restoring workspace from S3 backup before ${BEFORE}..."
+    # Build a restore script that uses S3 versioning to download each object
+    # as it was before the given timestamp. Runs on the instance via SSM.
+    RESTORE_SCRIPT=$(cat <<'INNEREOF'
+#!/bin/bash
+set -euo pipefail
+BUCKET="$1"
+PREFIX="$2"
+BEFORE="$3"
+DEST="/home/agent"
+REGION="$4"
+
+echo "Listing object versions before ${BEFORE}..."
+aws s3api list-object-versions \
+  --bucket "$BUCKET" \
+  --prefix "$PREFIX" \
+  --region "$REGION" \
+  --query "Versions[?LastModified<\`${BEFORE}\`]" \
+  --output json \
+| python3 -c "
+import json, sys
+from collections import defaultdict
+
+versions = json.load(sys.stdin) or []
+# Group by key, pick the most recent version before the cutoff
+by_key = defaultdict(list)
+for v in versions:
+    by_key[v['Key']].append(v)
+
+for key, vs in by_key.items():
+    vs.sort(key=lambda x: x['LastModified'], reverse=True)
+    latest = vs[0]
+    rel = key[len('$PREFIX'):]
+    print(json.dumps({'key': key, 'version': latest['VersionId'], 'rel': rel}))
+" | while IFS= read -r line; do
+  KEY="$(echo "$line" | jq -r .key)"
+  VID="$(echo "$line" | jq -r .version)"
+  REL="$(echo "$line" | jq -r .rel)"
+  DEST_PATH="${DEST}/${REL}"
+  mkdir -p "$(dirname "$DEST_PATH")"
+  aws s3api get-object \
+    --bucket "$BUCKET" \
+    --key "$KEY" \
+    --version-id "$VID" \
     --region "$REGION" \
-    --parameters "commands=[
-      \"aws s3 sync s3://${BACKUP_BUCKET}/${BACKUP_PREFIX} /home/agent/ --no-progress\",
-      \"chown -R agent:agent /home/agent\",
-      \"echo 'Workspace restored from S3 backup'\"
-    ]" \
-    --comment "restore-agent: S3 workspace recovery" \
-    --output text --query 'Command.CommandId'
+    "$DEST_PATH" >/dev/null
+done
+
+chown -R agent:agent "$DEST"
+echo "Workspace restored from S3 versions before ${BEFORE}"
+INNEREOF
+    )
+
+    aws ssm send-command \
+      --instance-ids "$MI_ID" \
+      --document-name AWS-RunShellScript \
+      --region "$REGION" \
+      --parameters "commands=[\"bash -c 'cat > /tmp/restore-versioned.sh << '\\''SCRIPT'\\''\\n${RESTORE_SCRIPT}\\nSCRIPT\\nbash /tmp/restore-versioned.sh ${BACKUP_BUCKET} ${BACKUP_PREFIX} ${BEFORE} ${REGION}'\"]" \
+      --comment "restore-agent: S3 versioned workspace recovery (before ${BEFORE})" \
+      --output text --query 'Command.CommandId'
+  fi
 
   echo "  S3 restore command sent. Workspace will be synced shortly."
 fi
