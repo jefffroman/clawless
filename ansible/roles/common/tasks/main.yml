@@ -97,10 +97,6 @@
     home: /home/agent
     shell: /bin/bash
 
-- name: Ensure agent home is traversable by openclaw user
-  ansible.builtin.file:
-    path: /home/agent
-    mode: "0755"
 
 - name: Add openclaw user (ubuntu) to docker group
   ansible.builtin.user:
