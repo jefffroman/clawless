@@ -41,24 +41,12 @@ MCP_SERVERS = {}
 # access (the "messaging" profile trap — see openclaw issue #33225).
 TOOLS_BLOCK = {"profile": "full"}
 
-# SearXNG web search — local instance, no API key required.
-# Default baseUrl assumes sandbox.mode=off (tools run on host, localhost works).
-# If sandbox is enabled, switch SEARXNG_HOST to host.docker.internal or 172.17.0.1
-# and set sandbox.docker.network to bridge.
+# SearXNG connection details — used by the skills.entries.searxng config block.
 # Default to host.docker.internal when sandbox is active (AGENT_UID set),
 # since the container can't reach the host's 127.0.0.1 directly.
 _default_searxng_host = "host.docker.internal" if os.environ.get("AGENT_UID") else "127.0.0.1"
 SEARXNG_HOST = os.environ.get("SEARXNG_HOST", _default_searxng_host)
 SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
-WEB_SEARCH_BLOCK = {
-    "web": {
-        "search": {
-            "enabled": True,
-            "provider": "searxng",
-            "baseUrl": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
-        }
-    }
-}
 
 # Per-peer session isolation: each person who DMs the bot gets their own
 # conversation thread. Safe default given dmPolicy: "open" on the Telegram channel.
@@ -109,8 +97,10 @@ def patch_config():
 
     # tools, session, channels are valid at root level.
     existing_tools = config.get("tools", {})
-    config["tools"] = {**existing_tools, **TOOLS_BLOCK, **WEB_SEARCH_BLOCK}
-    print(f"tools patched: profile={TOOLS_BLOCK['profile']}, web.search.provider=searxng")
+    config["tools"] = {**existing_tools, **TOOLS_BLOCK}
+    # Clean up stale web.search config from previous runs (now handled by skill).
+    config["tools"].pop("web", None)
+    print(f"tools patched: profile={TOOLS_BLOCK['profile']}")
 
     existing_session = config.get("session", {})
     config["session"] = {**existing_session, **SESSION_BLOCK}
@@ -123,6 +113,12 @@ def patch_config():
         existing_sandbox = defaults.get("sandbox", {})
         defaults["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
         print(f"sandbox patched: mode=all, user={AGENT_UID}")
+
+    # SearXNG skill: enable and set URL so the sandbox container can reach the host.
+    searxng_url = f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
+    skills = config.setdefault("skills", {}).setdefault("entries", {})
+    skills["searxng"] = {"enabled": True, "env": {"SEARXNG_URL": searxng_url}}
+    print(f"skills.entries.searxng patched: SEARXNG_URL={searxng_url}")
 
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields

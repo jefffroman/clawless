@@ -133,6 +133,25 @@
         HOME: /home/ubuntu
       when: sandbox_image_check.rc != 0
 
+    # Install SearXNG search skill into the agent workspace.
+    # The skill provides web search via the local SearXNG instance.
+    # Runs as agent user since the workspace is /home/agent.
+    - name: Ensure agent skills directory exists
+      ansible.builtin.file:
+        path: /home/agent/skills
+        state: directory
+        owner: agent
+        group: agent
+        mode: "0750"
+
+    - name: Install SearXNG skill from ClawHub
+      ansible.builtin.command:
+        cmd: openclaw skills install searxng
+        creates: /home/agent/skills/searxng/SKILL.md
+      become_user: agent
+      environment:
+        HOME: /home/agent
+
     # Pre-create workspace in agent user's home so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
       ansible.builtin.file:
