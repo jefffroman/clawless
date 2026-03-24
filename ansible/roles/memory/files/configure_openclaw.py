@@ -33,15 +33,9 @@ MEMORY_SEARCH_BLOCK = {
     }
 }
 
-# MCP servers available to the agent.
-# transport: stdio is required by the MCP spec for subprocess-based servers.
-MCP_SERVERS = {
-    "inboxapi": {
-        "command": "inboxapi",
-        "args": [],
-        "transport": "stdio",
-    }
-}
+# MCP servers — OpenClaw uses its plugin system for MCP, not a config key.
+# InboxAPI is installed globally via npm; register it as a plugin separately.
+MCP_SERVERS = {}
 
 # Enable full tool access. Without this the agent may boot with no shell/file
 # access (the "messaging" profile trap — see openclaw issue #33225).
@@ -94,7 +88,7 @@ def patch_config():
     defaults = config.setdefault("agents", {}).setdefault("defaults", {})
 
     # Clean up stale keys from previous configure_openclaw.py runs.
-    for stale_key in ("workspaceDir", "mcpServers", "sandbox"):
+    for stale_key in ("workspaceDir", "mcpServers", "sandbox", "provider"):
         config.pop(stale_key, None)
     config.get("agents", {}).pop("main", None)
     defaults.pop("mcpServers", None)
@@ -119,10 +113,8 @@ def patch_config():
     config["session"] = {**existing_session, **SESSION_BLOCK}
     print(f"session.dmScope patched to {SESSION_BLOCK['dmScope']}")
 
-    # MCP servers go under provider.mcpServers.
-    existing_mcp = config.setdefault("provider", {}).get("mcpServers", {})
-    config["provider"]["mcpServers"] = {**existing_mcp, **MCP_SERVERS}
-    print(f"provider.mcpServers patched: {list(MCP_SERVERS.keys())}")
+    # Clean up stale provider block from previous runs.
+    config.pop("provider", None)
 
     if SANDBOX_BLOCK:
         existing_sandbox = defaults.get("sandbox", {})
