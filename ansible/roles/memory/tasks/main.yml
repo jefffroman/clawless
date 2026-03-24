@@ -129,9 +129,7 @@
   ansible.builtin.command:
     cmd: >
       {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
-      vector_memory/indexer.py
-  args:
-    chdir: "{{ openclaw_workspace_dir }}"
+      {{ openclaw_workspace_dir }}/vector_memory/indexer.py
   become_user: "{{ agent_user }}"
   changed_when: true  # indexer always produces output
 
