@@ -1,7 +1,7 @@
 ---
 # Role: searxng
-# Installs SearXNG in its own Python venv, runs as a systemd service on loopback.
-# Provides free web search for OpenClaw agents via the JSON API.
+# Installs SearXNG from git source in its own Python venv, runs as a systemd
+# service on loopback. Provides free web search for OpenClaw agents via the JSON API.
 
 - name: Create searxng system user
   ansible.builtin.user:
@@ -22,18 +22,26 @@
     - /opt/searxng
     - "{{ searxng_config_dir }}"
 
+- name: Clone SearXNG source
+  ansible.builtin.git:
+    repo: https://github.com/searxng/searxng.git
+    dest: "{{ searxng_src }}"
+    depth: 1
+    version: master
+    force: false
+  register: searxng_clone
+
 - name: Create SearXNG Python venv
   ansible.builtin.command:
     cmd: python3 -m venv {{ searxng_venv }}
     creates: "{{ searxng_venv }}/bin/activate"
 
-- name: Install SearXNG in venv
+- name: Install SearXNG requirements into venv
   ansible.builtin.pip:
-    name: searxng
-    state: latest
+    requirements: "{{ searxng_src }}/requirements.txt"
     virtualenv: "{{ searxng_venv }}"
 
-- name: Fix venv ownership
+- name: Fix ownership
   ansible.builtin.file:
     path: /opt/searxng
     state: directory
@@ -75,8 +83,9 @@
       Type=exec
       User={{ searxng_user }}
       Group={{ searxng_user }}
+      WorkingDirectory={{ searxng_src }}
       Environment=SEARXNG_SETTINGS_PATH={{ searxng_config_dir }}/settings.yml
-      ExecStart={{ searxng_venv }}/bin/python -m searx.webapp
+      ExecStart={{ searxng_venv }}/bin/python searx/webapp.py
       Restart=on-failure
       RestartSec=5
 
@@ -101,5 +110,5 @@
     status_code: 200
   register: searxng_health
   until: searxng_health.status == 200
-  retries: 30
+  retries: 10
   delay: 2

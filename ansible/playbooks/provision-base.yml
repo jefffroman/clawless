@@ -139,14 +139,20 @@
         state: present
       become_user: agent
 
-    # Pre-install SearXNG in its venv so provision-client.yml skips the slow pip download.
+    # Pre-clone and install SearXNG so provision-client.yml skips the slow git+pip step.
+    - name: Clone SearXNG source
+      ansible.builtin.git:
+        repo: https://github.com/searxng/searxng.git
+        dest: /opt/searxng/searxng-src
+        depth: 1
+        version: master
+
     - name: Create SearXNG venv
       ansible.builtin.command:
         cmd: python3 -m venv /opt/searxng/venv
         creates: /opt/searxng/venv/bin/activate
 
-    - name: Pre-install SearXNG in venv
+    - name: Install SearXNG requirements into venv
       ansible.builtin.pip:
-        name: searxng
-        state: latest
+        requirements: /opt/searxng/searxng-src/requirements.txt
         virtualenv: /opt/searxng/venv
