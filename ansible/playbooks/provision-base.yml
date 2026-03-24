@@ -178,6 +178,10 @@
       become_user: "{{ agent_user }}"
       environment:
         HOME: "{{ agent_home }}"
+      register: searxng_install
+      retries: 3
+      delay: 30
+      until: searxng_install.rc == 0
 
     # Pre-create workspace in agent user's home so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
