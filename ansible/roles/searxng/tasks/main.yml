@@ -22,6 +22,11 @@
     - /opt/searxng
     - "{{ searxng_config_dir }}"
 
+- name: Mark SearXNG source dir as safe for git
+  ansible.builtin.command:
+    cmd: git config --global --add safe.directory {{ searxng_src }}
+  changed_when: false
+
 - name: Clone SearXNG source
   ansible.builtin.git:
     repo: https://github.com/searxng/searxng.git
