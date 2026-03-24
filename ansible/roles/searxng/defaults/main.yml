@@ -1,0 +1,5 @@
+---
+searxng_port: 8080
+searxng_venv: /opt/searxng/venv
+searxng_config_dir: /etc/searxng
+searxng_user: searxng

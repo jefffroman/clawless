@@ -1,6 +1,14 @@
 ---
-# Addresses CONTEXT.md security note: "Lightsail blueprint shipped with outdated kernel;
-# run apt upgrade post-provision."
+# Wait for any boot-time unattended-upgrades to finish before touching apt.
+# Fresh Ubuntu instances run unattended-upgr immediately; competing for the
+# dpkg lock causes hard failures.
+- name: Wait for unattended-upgrades to finish
+  ansible.builtin.shell:
+    cmd: |
+      while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        sleep 5
+      done
+  changed_when: false
 
 - name: Update apt cache
   ansible.builtin.apt:
@@ -17,7 +25,6 @@
 - name: Install essential packages
   ansible.builtin.apt:
     name:
-      - awscli
       - curl
       - ca-certificates
       - gnupg
@@ -25,6 +32,23 @@
       - unattended-upgrades
       - jq
       - python3-venv
+    state: present
+
+- name: Add NodeSource repository for Node.js 22
+  ansible.builtin.shell:
+    cmd: curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    creates: /etc/apt/sources.list.d/nodesource.list
+
+- name: Install Node.js 22
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+
+- name: Install AWS CLI v2 via snap
+  community.general.snap:
+    name: aws-cli
+    classic: true
     state: present
 
 - name: Configure unattended security upgrades

@@ -1,8 +1,12 @@
 ---
 # Base image bake: runs once on the golden template instance.
-# Applies system updates and pre-installs slow Python packages so that
-# provision-client.yml (which runs per new client) is fast.
+# Applies system updates, installs OpenClaw, and pre-installs slow Python
+# packages so that provision-client.yml (which runs per new client) is fast.
 # No client-specific configuration — this produces a generic, reusable image.
+#
+# OpenClaw is installed here via npm (not the Lightsail blueprint).
+# openclaw onboard --install-daemon creates the user service + bare openclaw.json.
+# provision-client.yml then patches the config and injects credentials.
 - name: Bake base image for Clawless OpenClaw nodes
   hosts: all
   become: true
@@ -21,14 +25,6 @@
     - role: common
 
   post_tasks:
-    - name: Ensure workspace vector_memory directory exists
-      ansible.builtin.file:
-        path: /var/lib/openclaw/workspace/vector_memory
-        state: directory
-        owner: ubuntu
-        group: ubuntu
-        mode: "0750"
-
     # Install ansible-core so the instance can self-provision via user_data at boot.
     - name: Install ansible-core
       ansible.builtin.apt:
@@ -53,12 +49,74 @@
         group: root
         mode: preserve
 
+    # Install OpenClaw globally so any user can run it.
+    # npm is provided by the nodejs package installed in the common role.
+    - name: Install OpenClaw (latest)
+      community.general.npm:
+        name: openclaw
+        global: true
+        state: latest
+
+    # Install InboxAPI MCP server globally (available to agent tool calls).
+    - name: Install InboxAPI MCP server globally
+      community.general.npm:
+        name: "@inboxapi/cli"
+        global: true
+        state: latest
+
+    # Enable lingering for the openclaw service user so the user-level systemd
+    # service starts automatically at boot without requiring a login session.
+    - name: Enable lingering for openclaw user
+      ansible.builtin.command:
+        cmd: loginctl enable-linger ubuntu
+      changed_when: false
+
+    # Run openclaw onboard as the service user.
+    # --non-interactive + --accept-risk: fully automated, no prompts
+    # --install-daemon: creates ~/.config/systemd/user/openclaw-gateway.service
+    # --auth-choice skip: we supply AWS Bedrock creds via EnvironmentFile, not openclaw's wizard
+    # --gateway-bind loopback: gateway listens on 127.0.0.1 only (never exposed externally)
+    # --gateway-token-ref-env: token sourced from OPENCLAW_GATEWAY_TOKEN env at runtime (SecretRef)
+    # --skip-*: no channels, skills, or search configured here; provision-client.yml handles them
+    # --skip-health: no gateway running yet during bake; health check not applicable
+    # Creates: ~/.openclaw/openclaw.json (bare config)
+    #          ~/.config/systemd/user/openclaw-gateway.service (user service unit)
+    # provision-client.yml then patches openclaw.json and injects credentials via drop-in.
+    - name: Run openclaw onboard to install user service and bare config
+      ansible.builtin.command:
+        cmd: >
+          openclaw onboard
+          --non-interactive
+          --accept-risk
+          --install-daemon
+          --auth-choice skip
+          --gateway-bind loopback
+          --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN
+          --skip-channels
+          --skip-skills
+          --skip-search
+          --skip-health
+        creates: /home/ubuntu/.openclaw/openclaw.json
+      become_user: ubuntu
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/1000"
+        OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
+
+    # Pre-create workspace vector_memory dir so Python venv install has a home.
+    - name: Ensure workspace vector_memory directory exists
+      ansible.builtin.file:
+        path: /home/ubuntu/.openclaw/workspace/vector_memory
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0750"
+
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages
       ansible.builtin.command:
-        cmd: python3 -m venv /var/lib/openclaw/workspace/vector_memory/venv
-        creates: /var/lib/openclaw/workspace/vector_memory/venv/bin/activate
+        cmd: python3 -m venv /home/ubuntu/.openclaw/workspace/vector_memory/venv
+        creates: /home/ubuntu/.openclaw/workspace/vector_memory/venv/bin/activate
       become_user: ubuntu
 
     - name: Pre-install memory Python packages
@@ -68,6 +126,18 @@
           - sentence-transformers
           - networkx
           - rank-bm25
-        virtualenv: /var/lib/openclaw/workspace/vector_memory/venv
+        virtualenv: /home/ubuntu/.openclaw/workspace/vector_memory/venv
         state: present
       become_user: ubuntu
+
+    # Pre-install SearXNG in its venv so provision-client.yml skips the slow pip download.
+    - name: Create SearXNG venv
+      ansible.builtin.command:
+        cmd: python3 -m venv /opt/searxng/venv
+        creates: /opt/searxng/venv/bin/activate
+
+    - name: Pre-install SearXNG in venv
+      ansible.builtin.pip:
+        name: searxng
+        state: latest
+        virtualenv: /opt/searxng/venv

@@ -52,7 +52,7 @@ hr
 
 # ── Read blueprint and bundle from tfvars ─────────────────────────────────────
 
-BLUEPRINT_ID="openclaw_ls_1_0"
+BLUEPRINT_ID="ubuntu_24_04"
 BUNDLE_ID="medium_3_0"
 if [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
   _bp=$(grep '^lightsail_blueprint_id' "$TOFU_DIR/terraform.tfvars" 2>/dev/null \
@@ -177,6 +177,10 @@ until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
   sleep 5
 done
 
+log "Waiting for cloud-init to complete (blueprint setup)..."
+ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@$INSTANCE_IP" \
+  "sudo cloud-init status --wait" || true
+
 # ── Run base provisioning playbook ───────────────────────────────────────────
 
 log "Running provision-base.yml..."
@@ -234,10 +238,13 @@ STATE_BUCKET="clawless-tfstate-${ACCOUNT_ID}"
 aws s3 cp "$TFVARS" "s3://${STATE_BUCKET}/config/terraform.tfvars"
 log "terraform.tfvars uploaded to s3://${STATE_BUCKET}/config/terraform.tfvars"
 
+log "Running tofu apply to register new snapshot name in state..."
+cd "$TOFU_DIR"
+tofu apply -auto-approve -input=false
+
 hr
 log "Golden snapshot ready: $SNAPSHOT_NAME"
-log "terraform.tfvars updated with golden_snapshot_name."
-log "Run 'tofu apply' or update /clawless/clients to trigger the lifecycle Lambda."
+log "terraform.tfvars updated and tofu state reflects new golden_snapshot_name."
 hr
 
 # cleanup runs via trap EXIT

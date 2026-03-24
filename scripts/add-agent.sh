@@ -56,30 +56,35 @@ CHANNEL="$(echo "$CHANNEL" | tr '[:upper:]' '[:lower:]')"
 
 case "$CHANNEL" in
   telegram)
-    echo "Create a bot via @BotFather on Telegram to get a token."
-    ask BOT_TOKEN "Bot token"
+    ask BOT_TOKEN "Agent Bot token"
+    ask PEER_ID "Client Telegram numeric user ID"
     CHANNEL_CONFIG="$(jq -cn \
       --arg token "$BOT_TOKEN" \
-      '{"enabled": true, "botToken": $token, "dmPolicy": "open"}')"
+      --arg peer  "$PEER_ID" \
+      '{"enabled": true, "botToken": $token, "dmPolicy": "allowlist", "allowFrom": [$peer]}')"
     ;;
   discord)
-    echo "Create a bot at discord.com/developers and copy the bot token."
-    ask BOT_TOKEN "Bot token"
+    ask BOT_TOKEN "Agent Bot token"
+    ask PEER_ID "Client Discord numeric user ID"
     CHANNEL_CONFIG="$(jq -cn \
       --arg token "$BOT_TOKEN" \
-      '{"enabled": true, "token": $token}')"
+      --arg peer  "$PEER_ID" \
+      '{"enabled": true, "token": $token, "dmPolicy": "allowlist", "allowFrom": [("user:" + $peer)]}')"
     ;;
   slack)
     echo "Create a Slack app with socket mode enabled."
     ask APP_TOKEN "App token (xapp-...)"
-    ask BOT_TOKEN "Bot token (xoxb-...)"
+    ask BOT_TOKEN "Agent Bot token (xoxb-...)"
+    ask PEER_ID "Client Slack member ID (U...)"
     CHANNEL_CONFIG="$(jq -cn \
-      --arg app "$APP_TOKEN" \
-      --arg bot "$BOT_TOKEN" \
-      '{"enabled": true, "mode": "socket", "appToken": $app, "botToken": $bot}')"
+      --arg app  "$APP_TOKEN" \
+      --arg bot  "$BOT_TOKEN" \
+      --arg peer "$PEER_ID" \
+      '{"enabled": true, "mode": "socket", "appToken": $app, "botToken": $bot, "dmPolicy": "allowlist", "allowFrom": [$peer]}')"
     ;;
   *)
-    echo "Paste the channel_config JSON for this provider (see docs.openclaw.ai/channels):"
+    echo "Paste the channel_config JSON for this provider (see docs.openclaw.ai/channels)."
+    echo "Ensure dmPolicy and allowFrom are set to restrict access to the client."
     read -rp "channel_config JSON: " CHANNEL_CONFIG
     if ! echo "$CHANNEL_CONFIG" | jq . >/dev/null 2>&1; then
       echo "Error: invalid JSON" >&2

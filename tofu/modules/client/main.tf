@@ -230,9 +230,10 @@ resource "null_resource" "instance_from_snapshot" {
 set -eu
 
 # SSM registration: always re-register on every boot. The activation is recreated
-# fresh on each resume (Lambda runs tofu apply), so stale registration files in
-# the snapshot would cause a MachineFingerprintDoesNotMatch error. The -y flag
-# overwrites any existing registration unconditionally.
+# fresh on each resume/provision (Lambda runs tofu apply), so stale registration
+# and fingerprint files in the snapshot would cause a MachineFingerprintDoesNotMatch
+# error. Delete both before re-registering.
+find /var/lib/amazon/ssm /var/snap/amazon-ssm-agent -name "fingerprint" -delete 2>/dev/null || true
 /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
   -id ${try(aws_ssm_activation.this[0].id, "")} \
   -code ${try(aws_ssm_activation.this[0].activation_code, "")} \

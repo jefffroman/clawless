@@ -63,5 +63,5 @@ aws ssm put-parameter \
 
 hr
 log "Pause triggered. The lifecycle Lambda will snapshot and destroy the instance."
-log "Resume with: ./scripts/resume.sh ${CLIENT_SLUG} ${AGENT_SLUG}"
+log "Resume with: ./scripts/resume-agent.sh ${CLIENT_SLUG} ${AGENT_SLUG}"
 hr

@@ -47,7 +47,7 @@
 
 - name: Ensure AWS credentials directory exists
   ansible.builtin.file:
-    path: /home/ubuntu/.aws
+    path: /home/{{ openclaw_user }}/.aws
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
@@ -63,7 +63,7 @@
 
 - name: Deploy AWS config with credential_process
   ansible.builtin.copy:
-    dest: /home/ubuntu/.aws/config
+    dest: /home/{{ openclaw_user }}/.aws/config
     content: |
       [default]
       credential_process = /usr/local/sbin/clawless-creds-helper
@@ -114,24 +114,28 @@
   when: token_check.rc != 0
   notify: Restart openclaw
 
-- name: Deploy OpenClaw YAML config (bind address, model, region)
-  ansible.builtin.template:
-    src: openclaw.yml.j2
-    dest: "{{ openclaw_config_file }}"
+- name: Ensure service drop-in directory exists
+  ansible.builtin.file:
+    path: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d
+    state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
-    mode: "0640"
-  notify: Restart openclaw
+    mode: "0755"
 
+# Drop-in injects the EnvironmentFile without touching the service unit that
+# openclaw onboard created. This survives openclaw upgrades that regenerate
+# the service file.
 - name: Configure OpenClaw systemd unit to load environment file
-  ansible.builtin.lineinfile:
-    path: "/etc/systemd/system/{{ openclaw_service_name }}.service"
-    regexp: "^EnvironmentFile="
-    line: "EnvironmentFile={{ openclaw_env_file }}"
-    insertafter: "^\\[Service\\]"
-    backup: true
+  ansible.builtin.copy:
+    dest: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf
+    content: |
+      [Service]
+      EnvironmentFile={{ openclaw_env_file }}
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
   notify:
-    - Reload systemd daemon
+    - Reload user systemd daemon
     - Restart openclaw
 
 - name: Ensure OpenClaw service is enabled and running
@@ -139,10 +143,19 @@
     name: "{{ openclaw_service_name }}"
     enabled: true
     state: started
+    scope: user
+  become_user: "{{ openclaw_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/1000"
 
-- name: Verify gateway is listening on loopback
-  ansible.builtin.wait_for:
-    host: "{{ openclaw_gateway_host }}"
-    port: "{{ openclaw_gateway_port }}"
-    timeout: 300
-    state: started
+- name: Verify OpenClaw service is active
+  ansible.builtin.command:
+    cmd: systemctl --user is-active {{ openclaw_service_name }}
+  become_user: "{{ openclaw_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/1000"
+  register: service_status
+  until: service_status.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false
