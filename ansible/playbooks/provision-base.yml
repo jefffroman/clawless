@@ -108,7 +108,7 @@
         creates: /home/ubuntu/.openclaw/openclaw.json
       become_user: ubuntu
       environment:
-        XDG_RUNTIME_DIR: "/run/user/1000"
+        XDG_RUNTIME_DIR: "/run/user/{{ lookup('pipe', 'id -u ubuntu') }}"
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
 
     # Pre-create workspace in agent user's home so Python venv install has a home.

@@ -10,4 +10,4 @@
     scope: user
   become_user: "{{ openclaw_user }}"
   environment:
-    XDG_RUNTIME_DIR: "/run/user/1000"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
