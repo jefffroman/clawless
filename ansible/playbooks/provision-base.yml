@@ -30,18 +30,11 @@
         database: passwd
         key: "{{ openclaw_user }}"
 
-    - name: Resolve agent user info from passwd
-      ansible.builtin.getent:
-        database: passwd
-        key: "{{ agent_user }}"
-      failed_when: false
-
-    - name: Set derived path facts from getent
+    - name: Set openclaw path facts from getent
       ansible.builtin.set_fact:
         openclaw_uid: "{{ getent_passwd[openclaw_user][1] }}"
         openclaw_home: "{{ getent_passwd[openclaw_user][4] }}"
         openclaw_state_dir: "{{ getent_passwd[openclaw_user][4] }}/.openclaw"
-        agent_home: "{{ getent_passwd[agent_user][4] | default('/home/' + agent_user) }}"
 
     # Write marker early so we can identify the snapshot even if later tasks fail.
     - name: Write golden snapshot marker
@@ -56,6 +49,16 @@
     - role: common
 
   post_tasks:
+    # Agent user is created by common role — resolve home dir now.
+    - name: Resolve agent user info from passwd
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ agent_user }}"
+
+    - name: Set agent path facts from getent
+      ansible.builtin.set_fact:
+        agent_home: "{{ getent_passwd[agent_user][4] }}"
+
     # Install ansible-core so the instance can self-provision via user_data at boot.
     - name: Install ansible-core
       ansible.builtin.apt:
