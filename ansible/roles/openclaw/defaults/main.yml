@@ -6,4 +6,6 @@ openclaw_env_file:       /etc/openclaw/openclaw.env
 openclaw_service_name:   openclaw-gateway
 openclaw_user:           ubuntu
 agent_user:              agent
-openclaw_workspace_dir:  /home/agent
+# openclaw_home, openclaw_state_dir, openclaw_uid, agent_home, and
+# openclaw_workspace_dir are resolved dynamically via getent in tasks/main.yml.
+# Do not hardcode paths here — they derive from the system passwd database.

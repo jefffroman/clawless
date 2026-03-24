@@ -271,7 +271,7 @@ systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
 
 # Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
 # Client vars are embedded at tofu apply time — no AWS API calls needed from the instance.
-if [ ! -f /var/lib/openclaw/.provisioned ]; then
+if [ ! -f /home/ubuntu/.openclaw/.provisioned ]; then
   base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
 ${base64encode(jsonencode({
   agent_slug              = var.agent_slug

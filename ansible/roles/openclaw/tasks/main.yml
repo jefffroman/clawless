@@ -1,14 +1,22 @@
 ---
 
-- name: Resolve openclaw user UID
-  ansible.builtin.command:
-    cmd: id -u {{ openclaw_user }}
-  register: openclaw_uid_result
-  changed_when: false
+- name: Resolve openclaw user info from passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ openclaw_user }}"
 
-- name: Set openclaw_uid fact
+- name: Resolve agent user info from passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ agent_user }}"
+
+- name: Set derived path facts from getent
   ansible.builtin.set_fact:
-    openclaw_uid: "{{ openclaw_uid_result.stdout }}"
+    openclaw_uid: "{{ getent_passwd[openclaw_user][1] }}"
+    openclaw_home: "{{ getent_passwd[openclaw_user][4] }}"
+    openclaw_state_dir: "{{ getent_passwd[openclaw_user][4] }}/.openclaw"
+    agent_home: "{{ getent_passwd[agent_user][4] }}"
+    openclaw_workspace_dir: "{{ getent_passwd[agent_user][4] }}"
 
 # S3 workspace restore removed — wake restores from Lightsail snapshot
 # (exact state at pause time). S3 backups are hourly and potentially stale.
@@ -16,7 +24,7 @@
 
 - name: Pre-create workspace .openclaw dir for gateway runtime state
   ansible.builtin.file:
-    path: /home/{{ agent_user }}/.openclaw
+    path: "{{ agent_home }}/.openclaw"
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ agent_user }}"
@@ -50,7 +58,7 @@
 
 - name: Ensure AWS credentials directory exists
   ansible.builtin.file:
-    path: /home/{{ openclaw_user }}/.aws
+    path: "{{ openclaw_home }}/.aws"
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
@@ -66,7 +74,7 @@
 
 - name: Deploy AWS config with credential_process
   ansible.builtin.copy:
-    dest: /home/{{ openclaw_user }}/.aws/config
+    dest: "{{ openclaw_home }}/.aws/config"
     content: |
       [default]
       credential_process = /usr/local/sbin/clawless-creds-helper
@@ -77,7 +85,7 @@
 # Agent user needs AWS credentials for backup (s3 sync) and CloudWatch metrics.
 - name: Ensure agent AWS credentials directory exists
   ansible.builtin.file:
-    path: /home/{{ agent_user }}/.aws
+    path: "{{ agent_home }}/.aws"
     state: directory
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
@@ -85,7 +93,7 @@
 
 - name: Deploy agent AWS config with credential_process
   ansible.builtin.copy:
-    dest: /home/{{ agent_user }}/.aws/config
+    dest: "{{ agent_home }}/.aws/config"
     content: |
       [default]
       credential_process = /usr/local/sbin/clawless-creds-helper
@@ -157,7 +165,7 @@
 
 - name: Ensure service drop-in directory exists
   ansible.builtin.file:
-    path: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d
+    path: "{{ openclaw_home }}/.config/systemd/user/{{ openclaw_service_name }}.service.d"
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
@@ -168,7 +176,7 @@
 # the service file.
 - name: Configure OpenClaw systemd unit to load environment file
   ansible.builtin.copy:
-    dest: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf
+    dest: "{{ openclaw_home }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf"
     content: |
       [Service]
       EnvironmentFile={{ openclaw_env_file }}

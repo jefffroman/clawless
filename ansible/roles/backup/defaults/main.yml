@@ -1,7 +1,7 @@
 ---
 # Path to back up. Passed from Terraform via local-exec -e flag.
 # Override if your OpenClaw version uses a different workspace path.
-openclaw_workspace_dir: /home/agent
+openclaw_workspace_dir: "{{ agent_home }}"
 
 # S3 bucket name. Passed from Terraform via local-exec -e flag.
 openclaw_backup_bucket: ""

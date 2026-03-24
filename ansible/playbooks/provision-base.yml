@@ -12,6 +12,10 @@
   become: true
   gather_facts: false
 
+  vars:
+    openclaw_user: ubuntu
+    agent_user: agent
+
   pre_tasks:
     - name: Wait for instance to be reachable via SSH
       ansible.builtin.wait_for_connection:
@@ -21,11 +25,23 @@
     - name: Gather facts
       ansible.builtin.setup:
 
-    - name: Resolve ubuntu user UID
-      ansible.builtin.command:
-        cmd: id -u ubuntu
-      register: ubuntu_uid_result
-      changed_when: false
+    - name: Resolve openclaw user info from passwd
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ openclaw_user }}"
+
+    - name: Resolve agent user info from passwd
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ agent_user }}"
+      failed_when: false
+
+    - name: Set derived path facts from getent
+      ansible.builtin.set_fact:
+        openclaw_uid: "{{ getent_passwd[openclaw_user][1] }}"
+        openclaw_home: "{{ getent_passwd[openclaw_user][4] }}"
+        openclaw_state_dir: "{{ getent_passwd[openclaw_user][4] }}/.openclaw"
+        agent_home: "{{ getent_passwd[agent_user][4] | default('/home/' + agent_user) }}"
 
     # Write marker early so we can identify the snapshot even if later tasks fail.
     - name: Write golden snapshot marker
@@ -83,7 +99,7 @@
     # service starts automatically at boot without requiring a login session.
     - name: Enable lingering for openclaw user
       ansible.builtin.command:
-        cmd: loginctl enable-linger ubuntu
+        cmd: loginctl enable-linger {{ openclaw_user }}
       changed_when: false
 
     # Run openclaw onboard as the service user.
@@ -111,10 +127,10 @@
           --skip-skills
           --skip-search
           --skip-health
-        creates: /home/ubuntu/.openclaw/openclaw.json
-      become_user: ubuntu
+        creates: "{{ openclaw_state_dir }}/openclaw.json"
+      become_user: "{{ openclaw_user }}"
       environment:
-        XDG_RUNTIME_DIR: "/run/user/{{ ubuntu_uid_result.stdout }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
 
     # Build the sandbox-common Docker image so sandbox containers have python3,
@@ -130,7 +146,7 @@
       ansible.builtin.command:
         cmd: /usr/lib/node_modules/openclaw/scripts/sandbox-common-setup.sh
       environment:
-        HOME: /home/ubuntu
+        HOME: "{{ openclaw_home }}"
       when: sandbox_image_check.rc != 0
 
     # Install SearXNG search skill into the agent workspace.
@@ -138,36 +154,36 @@
     # Runs as agent user since the workspace is /home/agent.
     - name: Ensure agent skills directory exists
       ansible.builtin.file:
-        path: /home/agent/skills
+        path: "{{ agent_home }}/skills"
         state: directory
-        owner: agent
-        group: agent
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
         mode: "0750"
 
     - name: Install SearXNG skill from ClawHub
       ansible.builtin.command:
         cmd: openclaw skills install searxng
-        creates: /home/agent/skills/searxng/SKILL.md
-      become_user: agent
+        creates: "{{ agent_home }}/skills/searxng/SKILL.md"
+      become_user: "{{ agent_user }}"
       environment:
-        HOME: /home/agent
+        HOME: "{{ agent_home }}"
 
     # Pre-create workspace in agent user's home so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
       ansible.builtin.file:
-        path: /home/agent/vector_memory
+        path: "{{ agent_home }}/vector_memory"
         state: directory
-        owner: agent
-        group: agent
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
         mode: "0750"
 
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages
       ansible.builtin.command:
-        cmd: python3 -m venv /home/agent/vector_memory/venv
-        creates: /home/agent/vector_memory/venv/bin/activate
-      become_user: agent
+        cmd: "python3 -m venv {{ agent_home }}/vector_memory/venv"
+        creates: "{{ agent_home }}/vector_memory/venv/bin/activate"
+      become_user: "{{ agent_user }}"
 
     - name: Pre-install memory Python packages
       ansible.builtin.pip:
@@ -176,9 +192,9 @@
           - sentence-transformers
           - networkx
           - rank-bm25
-        virtualenv: /home/agent/vector_memory/venv
+        virtualenv: "{{ agent_home }}/vector_memory/venv"
         state: present
-      become_user: agent
+      become_user: "{{ agent_user }}"
 
     # Pre-clone and install SearXNG so provision-client.yml skips the slow git+pip step.
     - name: Clone SearXNG source
