@@ -20,7 +20,7 @@
     state: directory
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
-    mode: "0750"
+    mode: "2770"
   loop:
     - memory
     - vector_memory
@@ -31,7 +31,7 @@
     dest: "{{ openclaw_workspace_dir }}/.gitignore"
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
-    mode: "0640"
+    mode: "0660"
     force: false  # Don't overwrite if already customised
 
 - name: Create Python venv
@@ -72,7 +72,7 @@
     dest: "{{ openclaw_workspace_dir }}/MEMORY.md"
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
-    mode: "0640"
+    mode: "0660"
     force: false
 
 - name: Seed AGENTS.md (first provision only)
@@ -81,7 +81,7 @@
     dest: "{{ openclaw_workspace_dir }}/AGENTS.md"
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
-    mode: "0640"
+    mode: "0660"
     force: false
 
 - name: Seed identity and persona files (first provision only)
@@ -90,7 +90,7 @@
     dest: "{{ openclaw_workspace_dir }}/{{ item.dest }}"
     owner: "{{ agent_user }}"
     group: "{{ agent_user }}"
-    mode: "0640"
+    mode: "0660"
     force: false
   loop:
     - { src: SOUL.md.j2,      dest: SOUL.md }
@@ -99,18 +99,6 @@
     - { src: USER.md.j2,      dest: USER.md }
     - { src: HEARTBEAT.md.j2, dest: HEARTBEAT.md }
     - { src: BOOTSTRAP.md.j2, dest: BOOTSTRAP.md }
-
-# Skills were installed at bake time into the onboard default workspace
-# (/home/ubuntu/.openclaw/workspace/skills/). Now that the workspace has
-# moved to /home/agent, copy them across so the agent can see them.
-- name: Copy baked skills to agent workspace
-  ansible.builtin.copy:
-    src: /home/{{ openclaw_user }}/.openclaw/workspace/skills/
-    dest: "{{ openclaw_workspace_dir }}/skills/"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0750"
-    remote_src: true
 
 - name: Patch OpenClaw config for memory search and model
   ansible.builtin.command:

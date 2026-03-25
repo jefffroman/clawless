@@ -97,6 +97,16 @@
     home: /home/agent
     shell: /bin/bash
 
+- name: Make agent home group-writable with setgid (gateway file tools bridge runs as ubuntu)
+  ansible.builtin.file:
+    path: /home/agent
+    mode: "2770"
+
+- name: Set default ACL so agent group gets rw on new files in workspace
+  ansible.builtin.command:
+    cmd: setfacl -R -d -m g::rwX /home/agent
+  changed_when: true
+
 - name: Pre-create agent Ansible temp directory
   ansible.builtin.file:
     path: /home/agent/.ansible/tmp

@@ -162,13 +162,10 @@
       async: 600
       poll: 15
 
-    # Install SearXNG search skill into the agent workspace.
-    # The skill provides web search via the local SearXNG instance.
-    # Installed as openclaw_user (ubuntu) because the skill installer reads
-    # ~/.openclaw/openclaw.json to find the workspace. At bake time the
-    # workspace is still the default (/home/ubuntu), so the skill lands in
-    # /home/ubuntu/skills/. provision-client.yml copies it to /home/agent/skills/
-    # after the workspace is reconfigured.
+    # Install SearXNG search skill and promote it to a bundled skill.
+    # openclaw skills install downloads from ClawHub into the workspace.
+    # We then copy it into the npm-global skills directory so it's discovered
+    # as a bundled skill — no workspace path or permission juggling needed.
     - name: Install SearXNG skill from ClawHub
       ansible.builtin.command:
         cmd: openclaw skills install searxng
@@ -178,6 +175,13 @@
       retries: 3
       delay: 30
       until: searxng_install.rc == 0
+
+    - name: Promote SearXNG to bundled skills directory
+      ansible.builtin.copy:
+        src: /home/{{ openclaw_user }}/.openclaw/workspace/skills/searxng/
+        dest: /usr/lib/node_modules/openclaw/skills/searxng/
+        remote_src: true
+        mode: "0755"
 
     # Pre-create workspace in agent user's home so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
