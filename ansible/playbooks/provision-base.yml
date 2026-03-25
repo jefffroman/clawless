@@ -159,6 +159,8 @@
       ansible.builtin.command:
         cmd: docker build -t openclaw-sandbox-common:bookworm-slim -f /tmp/Dockerfile.sandbox-common /tmp
       when: sandbox_image_check.rc != 0
+      async: 600
+      poll: 15
 
     # Install SearXNG search skill into the agent workspace.
     # The skill provides web search via the local SearXNG instance.

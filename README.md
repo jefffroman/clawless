@@ -335,18 +335,6 @@ These are listed in `.gitignore`.
 ./scripts/ssm-run.sh --slug <client>-<agent> "systemctl status searxng && curl -s http://127.0.0.1:8080/healthz"
 ```
 
-**Broken session ("conversation must start with user message" or reasoning content error):**
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "rm -f /home/ubuntu/.openclaw/agents/main/sessions/*.jsonl && \
-   echo '{}' > /home/ubuntu/.openclaw/agents/main/sessions/sessions.json && \
-   sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user restart openclaw-gateway"
-```
-
-**SSM instance not appearing:** Wait 2–3 minutes after instance creation. If still missing, check that the SSM activation hasn't expired (`tofu apply` creates a new one on each apply).
-
-**Name collision on replace (`names are already in use`):** Lightsail `delete-instance` is asynchronous. The destroy provisioner in `main.tf` polls until the name is released before proceeding.
-
 ---
 
 ## Contributing
