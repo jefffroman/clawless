@@ -4,23 +4,13 @@
 # L3: NetworkX) in the agent's workspace. Seeds MEMORY.md and AGENTS.md on first
 # provision; idempotent on re-runs. Auto-reindex runs every 5 minutes via systemd timer.
 
-- name: Resolve agent user UID
-  ansible.builtin.command:
-    cmd: id -u {{ agent_user }}
-  register: agent_uid_result
-  changed_when: false
-
-- name: Set agent_uid fact
-  ansible.builtin.set_fact:
-    agent_uid: "{{ agent_uid_result.stdout }}"
-
 - name: Create workspace subdirectories
   ansible.builtin.file:
     path: "{{ openclaw_workspace_dir }}/{{ item }}"
     state: directory
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "2770"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
   loop:
     - memory
     - vector_memory
@@ -29,16 +19,16 @@
   ansible.builtin.template:
     src: workspace.gitignore.j2
     dest: "{{ openclaw_workspace_dir }}/.gitignore"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0660"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
     force: false  # Don't overwrite if already customised
 
 - name: Create Python venv
   ansible.builtin.command:
     cmd: python3 -m venv "{{ openclaw_workspace_dir }}/vector_memory/venv"
     creates: "{{ openclaw_workspace_dir }}/vector_memory/venv/bin/activate"
-  become_user: "{{ agent_user }}"
+  become_user: "{{ openclaw_user }}"
 
 - name: Install memory Python packages
   ansible.builtin.pip:
@@ -49,14 +39,14 @@
       - rank-bm25
     virtualenv: "{{ openclaw_workspace_dir }}/vector_memory/venv"
     state: present
-  become_user: "{{ agent_user }}"
+  become_user: "{{ openclaw_user }}"
 
 - name: Deploy memory scripts
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "{{ openclaw_workspace_dir }}/vector_memory/{{ item }}"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
     mode: "0750"
   loop:
     - indexer.py
@@ -70,27 +60,27 @@
   ansible.builtin.template:
     src: MEMORY.md.j2
     dest: "{{ openclaw_workspace_dir }}/MEMORY.md"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0660"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
     force: false
 
 - name: Seed AGENTS.md (first provision only)
   ansible.builtin.template:
     src: AGENTS.md.j2
     dest: "{{ openclaw_workspace_dir }}/AGENTS.md"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0660"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
     force: false
 
 - name: Seed identity and persona files (first provision only)
   ansible.builtin.template:
     src: "{{ item.src }}"
     dest: "{{ openclaw_workspace_dir }}/{{ item.dest }}"
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0660"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
     force: false
   loop:
     - { src: SOUL.md.j2,      dest: SOUL.md }
@@ -109,7 +99,6 @@
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
     OPENCLAW_MODEL: "{{ bedrock_model | default('bedrock/us.amazon.nova-lite-v1:0') }}"
     OPENCLAW_WORKSPACE: "{{ openclaw_workspace_dir }}"
-    AGENT_UID: "{{ agent_uid }}"
   notify: Restart openclaw
 
 - name: Patch OpenClaw config for channel integration
@@ -121,7 +110,6 @@
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
     OPENCLAW_CHANNEL: "{{ agent_channel | lower }}"
     OPENCLAW_CHANNEL_CONFIG: "{{ channel_config | to_json }}"
-    AGENT_UID: "{{ agent_uid }}"
   when: channel_config is defined and channel_config is not none
   no_log: true
   notify: Restart openclaw
@@ -131,7 +119,7 @@
     cmd: >
       {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
       {{ openclaw_workspace_dir }}/vector_memory/indexer.py
-  become_user: "{{ agent_user }}"
+  become_user: "{{ openclaw_user }}"
   changed_when: true  # indexer always produces output
 
 - name: Deploy auto-reindex script
@@ -161,7 +149,7 @@
       [Service]
       Type=oneshot
       ExecStart=/usr/local/bin/clawless-reindex
-      User={{ agent_user }}
+      User={{ openclaw_user }}
   notify: Reload systemd daemon
 
 - name: Deploy reindex systemd timer

@@ -6,31 +6,16 @@
   register: openclaw_getent
   changed_when: false
 
-- name: Resolve agent user home
-  ansible.builtin.command:
-    cmd: "getent passwd {{ agent_user }}"
-  register: agent_getent
-  changed_when: false
-
 - name: Set derived path facts
   ansible.builtin.set_fact:
     openclaw_uid: "{{ openclaw_getent.stdout.split(':')[2] }}"
     openclaw_home: "{{ openclaw_getent.stdout.split(':')[5] }}"
     openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
-    agent_home: "{{ agent_getent.stdout.split(':')[5] }}"
-    openclaw_workspace_dir: "{{ agent_getent.stdout.split(':')[5] }}"
+    openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}"
 
 # S3 workspace restore removed — wake restores from Lightsail snapshot
 # (exact state at pause time). S3 backups are hourly and potentially stale.
 # For disaster recovery (instance deleted, no snapshot), use restore-agent.sh.
-
-- name: Pre-create workspace .openclaw dir for gateway runtime state
-  ansible.builtin.file:
-    path: "{{ agent_home }}/.openclaw"
-    state: directory
-    owner: "{{ openclaw_user }}"
-    group: "{{ agent_user }}"
-    mode: "0750"
 
 - name: Ensure OpenClaw config directory exists
   ansible.builtin.file:
@@ -83,37 +68,6 @@
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
     mode: "0600"
-
-# Agent user needs AWS credentials for backup (s3 sync) and CloudWatch metrics.
-- name: Ensure agent AWS credentials directory exists
-  ansible.builtin.file:
-    path: "{{ agent_home }}/.aws"
-    state: directory
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0700"
-
-- name: Deploy agent AWS config with credential_process
-  ansible.builtin.copy:
-    dest: "{{ agent_home }}/.aws/config"
-    content: |
-      [default]
-      credential_process = /usr/local/sbin/clawless-creds-helper
-    owner: "{{ agent_user }}"
-    group: "{{ agent_user }}"
-    mode: "0600"
-
-# Agent user needs sudo for clawless-creds-helper (accesses root's SSM creds).
-# Unlike ubuntu, agent doesn't have NOPASSWD:ALL — grant only what's needed.
-- name: Grant agent user sudo access for credential helper
-  ansible.builtin.copy:
-    dest: /etc/sudoers.d/clawless-agent
-    content: |
-      {{ agent_user }} ALL=(root) NOPASSWD: /usr/bin/aws sts assume-role *
-    owner: root
-    group: root
-    mode: "0440"
-    validate: "visudo -cf %s"
 
 # Use lineinfile (not template) so the OPENCLAW_GATEWAY_TOKEN line written below
 # is never clobbered when the region changes on re-runs.

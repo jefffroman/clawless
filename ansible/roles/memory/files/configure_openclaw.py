@@ -51,10 +51,9 @@ SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
 # conversation thread. Safe default given dmPolicy: "open" on the Telegram channel.
 SESSION_BLOCK = {"dmScope": "per-peer"}
 
-# Sandbox: tools run in a Docker container as the agent UID.
-# The gateway (openclaw_user) manages the container; tool execution is isolated.
+# Sandbox: tools run in a Docker container as the gateway user (ubuntu).
+# OpenClaw auto-detects the UID from the workspace owner when docker.user is unset.
 # Valid modes: "off", "non-main", "all".
-AGENT_UID = os.environ.get("AGENT_UID", "")
 SANDBOX_BLOCK = {
     "mode": "all",
     "scope": "agent",
@@ -62,7 +61,6 @@ SANDBOX_BLOCK = {
     "docker": {
         "image": "openclaw-sandbox-common:bookworm-slim",
         "network": "bridge",
-        "user": AGENT_UID,
         "binds": [
             "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
         ],
@@ -71,7 +69,7 @@ SANDBOX_BLOCK = {
         ],
         "dangerouslyAllowExternalBindSources": True,
     },
-} if AGENT_UID else None
+}
 
 
 def patch_config():
@@ -115,10 +113,11 @@ def patch_config():
     # Clean up stale provider block from previous runs.
     config.pop("provider", None)
 
-    if SANDBOX_BLOCK:
-        existing_sandbox = defaults.get("sandbox", {})
-        defaults["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
-        print(f"sandbox patched: mode=all, user={AGENT_UID}")
+    existing_sandbox = defaults.get("sandbox", {})
+    defaults["sandbox"] = {**existing_sandbox, **SANDBOX_BLOCK}
+    # Remove stale docker.user from previous runs (now auto-detected from workspace owner).
+    defaults["sandbox"].get("docker", {}).pop("user", None)
+    print("sandbox patched: mode=all, user=auto")
 
     # SearXNG skill: enable and set URL so the sandbox container can reach the host.
     searxng_url = f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"

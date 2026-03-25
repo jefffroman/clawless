@@ -31,7 +31,6 @@
       - lsb-release
       - unattended-upgrades
       - jq
-      - acl
       - python3-venv
     state: present
 
@@ -90,36 +89,10 @@
         enabled: true
         state: started
 
-- name: Create agent system user (sandbox tool execution)
-  ansible.builtin.user:
-    name: agent
-    system: true
-    create_home: true
-    home: /home/agent
-    shell: /bin/bash
-
-- name: Make agent home group-writable with setgid (gateway file tools bridge runs as ubuntu)
-  ansible.builtin.file:
-    path: /home/agent
-    mode: "2770"
-
-- name: Set default ACL so agent group gets rw on new files in workspace
-  ansible.builtin.command:
-    cmd: setfacl -R -d -m g::rwX /home/agent
-  changed_when: true
-
-- name: Pre-create agent Ansible temp directory
-  ansible.builtin.file:
-    path: /home/agent/.ansible/tmp
-    state: directory
-    owner: agent
-    group: agent
-    mode: "0700"
-
-- name: Add openclaw user (ubuntu) to docker and agent groups
+- name: Add openclaw user (ubuntu) to docker group
   ansible.builtin.user:
     name: ubuntu
-    groups: docker,agent
+    groups: docker
     append: true
 
 - name: Set timezone to UTC
