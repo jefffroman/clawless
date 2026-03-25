@@ -177,8 +177,8 @@ Verify an instance is ready:
 The `--slug` argument is the hyphenated form of `{client-slug}-{agent-slug}`:
 
 ```bash
-./scripts/ssm-run.sh --slug acme-corp-aria "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway"
-./scripts/ssm-run.sh --slug acme-corp-aria "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50"
+./scripts/ssm-run.sh --slug acme-corp-aria "runuser -l ubuntu -- systemctl --user status openclaw-gateway"
+./scripts/ssm-run.sh --slug acme-corp-aria "runuser -l ubuntu -- journalctl --user-unit openclaw-gateway -n 50"
 ```
 
 ### Check costs
@@ -320,9 +320,9 @@ These are listed in `.gitignore`.
 **Check OpenClaw service** (user-level systemd under ubuntu):
 ```bash
 ./scripts/ssm-run.sh --slug <client>-<agent> \
-  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway"
+  "runuser -l ubuntu -- systemctl --user status openclaw-gateway"
 ./scripts/ssm-run.sh --slug <client>-<agent> \
-  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50"
+  "runuser -l ubuntu -- journalctl --user-unit openclaw-gateway -n 50"
 ```
 
 **Check backup status:**
@@ -340,7 +340,7 @@ These are listed in `.gitignore`.
 ./scripts/ssm-run.sh --slug <client>-<agent> \
   "rm -f /home/ubuntu/.openclaw/agents/main/sessions/*.jsonl && \
    echo '{}' > /home/ubuntu/.openclaw/agents/main/sessions/sessions.json && \
-   sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user restart openclaw-gateway"
+   runuser -l ubuntu -- systemctl --user restart openclaw-gateway"
 ```
 
 **SSM instance not appearing:** Wait 2–3 minutes after instance creation. If still missing, check that the SSM activation hasn't expired (`tofu apply` creates a new one on each apply).
