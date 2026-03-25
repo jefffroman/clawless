@@ -49,8 +49,8 @@ fi
 if [[ -n "$SLUG" && -z "$INSTANCE_ID" ]]; then
   INSTANCE_ID=$(aws ssm describe-instance-information \
     --region "$REGION" \
-    --query "InstanceInformationList[?Name=='clawless-${SLUG}' && PingStatus=='Online'].InstanceId | [0]" \
-    --output text)
+    --query "InstanceInformationList[?Name=='clawless-${SLUG}' && PingStatus=='Online'].InstanceId" \
+    --output text | head -1)
   if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
     echo "ERROR: No online SSM instance found for slug '${SLUG}'" >&2
     exit 1

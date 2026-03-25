@@ -100,6 +100,18 @@
     - { src: HEARTBEAT.md.j2, dest: HEARTBEAT.md }
     - { src: BOOTSTRAP.md.j2, dest: BOOTSTRAP.md }
 
+# Skills were installed at bake time into the onboard default workspace
+# (/home/ubuntu/.openclaw/workspace/skills/). Now that the workspace has
+# moved to /home/agent, copy them across so the agent can see them.
+- name: Copy baked skills to agent workspace
+  ansible.builtin.copy:
+    src: /home/{{ openclaw_user }}/.openclaw/workspace/skills/
+    dest: "{{ openclaw_workspace_dir }}/skills/"
+    owner: "{{ agent_user }}"
+    group: "{{ agent_user }}"
+    mode: "0750"
+    remote_src: true
+
 - name: Patch OpenClaw config for memory search and model
   ansible.builtin.command:
     cmd: >
@@ -121,6 +133,7 @@
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
     OPENCLAW_CHANNEL: "{{ agent_channel | lower }}"
     OPENCLAW_CHANNEL_CONFIG: "{{ channel_config | to_json }}"
+    AGENT_UID: "{{ agent_uid }}"
   when: channel_config is defined and channel_config is not none
   no_log: true
   notify: Restart openclaw

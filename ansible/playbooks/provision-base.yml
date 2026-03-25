@@ -162,22 +162,16 @@
 
     # Install SearXNG search skill into the agent workspace.
     # The skill provides web search via the local SearXNG instance.
-    # Runs as agent user since the workspace is /home/agent.
-    - name: Ensure agent skills directory exists
-      ansible.builtin.file:
-        path: "{{ agent_home }}/skills"
-        state: directory
-        owner: "{{ agent_user }}"
-        group: "{{ agent_user }}"
-        mode: "0750"
-
+    # Installed as openclaw_user (ubuntu) because the skill installer reads
+    # ~/.openclaw/openclaw.json to find the workspace. At bake time the
+    # workspace is still the default (/home/ubuntu), so the skill lands in
+    # /home/ubuntu/skills/. provision-client.yml copies it to /home/agent/skills/
+    # after the workspace is reconfigured.
     - name: Install SearXNG skill from ClawHub
       ansible.builtin.command:
         cmd: openclaw skills install searxng
-        creates: "{{ agent_home }}/skills/searxng/SKILL.md"
-      become_user: "{{ agent_user }}"
-      environment:
-        HOME: "{{ agent_home }}"
+        creates: /home/{{ openclaw_user }}/.openclaw/workspace/skills/searxng/SKILL.md
+      become_user: "{{ openclaw_user }}"
       register: searxng_install
       retries: 3
       delay: 30
