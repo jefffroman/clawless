@@ -51,6 +51,21 @@
     classic: true
     state: present
 
+# SSM Agent is pre-installed on Lightsail blueprint images but not on stock
+# Ubuntu. We install via snap so it auto-updates and survives dist-upgrades.
+# Required for SSM hybrid activation (credential delivery, Session Manager).
+- name: Install SSM Agent via snap
+  community.general.snap:
+    name: amazon-ssm-agent
+    classic: true
+    state: present
+
+- name: Ensure SSM Agent is enabled and running
+  ansible.builtin.systemd:
+    name: snap.amazon-ssm-agent.amazon-ssm-agent
+    enabled: true
+    state: started
+
 - name: Configure unattended security upgrades
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/20auto-upgrades
