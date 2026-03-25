@@ -110,6 +110,16 @@
     groups: docker
     append: true
 
+- name: Deploy bash aliases for ubuntu user
+  ansible.builtin.copy:
+    dest: /home/ubuntu/.bash_aliases
+    content: |
+      alias checkclaw="systemctl --user status openclaw-gateway --no-pager;echo;journalctl --user-unit openclaw-gateway -n 50 --no-pager"
+      alias checkboot="ls -la /home/ubuntu/.openclaw/.provisioned;echo;cat /var/log/cloud-init-output.log"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+
 - name: Set timezone to UTC
   community.general.timezone:
     name: UTC
