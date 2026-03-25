@@ -52,7 +52,11 @@ SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
 SESSION_BLOCK = {"dmScope": "per-peer"}
 
 # Sandbox: tools run in a Docker container as the gateway user (ubuntu).
-# OpenClaw auto-detects the UID from the workspace owner when docker.user is unset.
+# Ideally the container would use a separate UID for isolation, but OpenClaw's
+# file tools bridge hardcodes 0600 perms (openclaw/openclaw#17941), so any file
+# written by the gateway is unreadable by a different container UID. Until that's
+# fixed, we leave docker.user unset and let OpenClaw auto-detect the UID from
+# the workspace owner.
 # Valid modes: "off", "non-main", "all".
 SANDBOX_BLOCK = {
     "mode": "all",
