@@ -16,9 +16,7 @@ CHANNEL_CONFIG = json.loads(os.environ.get("OPENCLAW_CHANNEL_CONFIG", "null") or
 # Full OpenClaw model string (e.g. "bedrock/us.amazon.nova-micro-v1:0").
 # If absent the existing model config is left untouched.
 MODEL = os.environ.get("OPENCLAW_MODEL", "").strip()
-# Workspace path override — sandbox moves workspace from openclaw user's home
-# to the agent user's home directory.
-WORKSPACE_PATH = os.environ.get("OPENCLAW_WORKSPACE", "").strip()
+
 
 MEMORY_SEARCH_BLOCK = {
     "memorySearch": {
@@ -92,10 +90,7 @@ def patch_config():
     config.get("agents", {}).pop("main", None)
     defaults.pop("mcpServers", None)
     defaults.pop("workspaceDir", None)
-
-    if WORKSPACE_PATH:
-        defaults["workspace"] = WORKSPACE_PATH
-        print(f"agents.defaults.workspace patched to {WORKSPACE_PATH}")
+    defaults.pop("workspace", None)
 
     defaults.update(MEMORY_SEARCH_BLOCK)
 

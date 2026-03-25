@@ -98,7 +98,6 @@
   environment:
     OPENCLAW_CONFIG_PATH: "{{ openclaw_json_config }}"
     OPENCLAW_MODEL: "{{ bedrock_model | default('bedrock/us.amazon.nova-lite-v1:0') }}"
-    OPENCLAW_WORKSPACE: "{{ openclaw_workspace_dir }}"
   notify: Restart openclaw
 
 - name: Patch OpenClaw config for channel integration
