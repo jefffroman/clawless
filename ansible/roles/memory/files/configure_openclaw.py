@@ -42,10 +42,9 @@ MCP_SERVERS = {}
 TOOLS_BLOCK = {"profile": "full"}
 
 # SearXNG connection details — used by the skills.entries.searxng config block.
-# Default to host.docker.internal when sandbox is active (AGENT_UID set),
-# since the container can't reach the host's 127.0.0.1 directly.
-_default_searxng_host = "host.docker.internal" if os.environ.get("AGENT_UID") else "127.0.0.1"
-SEARXNG_HOST = os.environ.get("SEARXNG_HOST", _default_searxng_host)
+# Sandbox containers use bridge networking with extraHosts mapping
+# host.docker.internal → host-gateway, so the container can reach the host.
+SEARXNG_HOST = os.environ.get("SEARXNG_HOST", "host.docker.internal")
 SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
 
 # Per-peer session isolation: each person who DMs the bot gets their own
@@ -64,6 +63,13 @@ SANDBOX_BLOCK = {
         "image": "openclaw-sandbox-common:bookworm-slim",
         "network": "bridge",
         "user": AGENT_UID,
+        "binds": [
+            "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
+        ],
+        "extraHosts": [
+            "host.docker.internal:host-gateway",
+        ],
+        "dangerouslyAllowExternalBindSources": True,
     },
 } if AGENT_UID else None
 
