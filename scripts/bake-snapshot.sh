@@ -70,35 +70,6 @@ fi
 log "Publishing ansible to S3..."
 "$REPO_ROOT/scripts/publish-ansible.sh" --region "$REGION"
 
-# ── Temporary SSM activation for the bake instance ───────────────────────────
-
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-SSM_ROLE="clawless-golden-bake-ssm"
-
-log "Creating temporary IAM role for bake SSM activation..."
-aws iam create-role \
-  --role-name "$SSM_ROLE" \
-  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ssm.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-  --region "$REGION" >/dev/null 2>&1 || true
-aws iam attach-role-policy \
-  --role-name "$SSM_ROLE" \
-  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null 2>&1 || true
-
-log "Polling for IAM role propagation..."
-for i in $(seq 1 24); do
-  ACTIVATION=$(aws ssm create-activation \
-    --iam-role "$SSM_ROLE" \
-    --registration-limit 1 \
-    --region "$REGION" \
-    --output json 2>&1) && break
-  echo "$ACTIVATION" | grep -q "Nonexistent role\|missing ssm service" \
-    || { echo "$ACTIVATION" >&2; exit 1; }
-  log "  ...not yet (attempt $i/24), retrying in 5s"
-  sleep 5
-done
-ACTIVATION_ID=$(echo "$ACTIVATION" | jq -r .ActivationId)
-ACTIVATION_CODE=$(echo "$ACTIVATION" | jq -r .ActivationCode)
-
 # ── Ensure SSH key pair exists (for Ansible SSH access to bake instance) ─────
 # Generate locally and upload to Lightsail if not already present.
 if [[ ! -f "$SSH_KEY" ]]; then
@@ -117,36 +88,18 @@ fi
 # ── Create bake instance ──────────────────────────────────────────────────────
 
 log "Creating bake instance ($BLUEPRINT_ID / $BUNDLE_ID)..."
-USERDATA=$(cat <<SCRIPT
-set -eu
-snap install amazon-ssm-agent --classic
-/snap/amazon-ssm-agent/current/amazon-ssm-agent -register -y \
-  -id '$ACTIVATION_ID' \
-  -code '$ACTIVATION_CODE' \
-  -region '$REGION'
-systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent
-systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
-SCRIPT
-)
-
 aws lightsail create-instances \
   --instance-names "$INSTANCE_NAME" \
   --availability-zone "$AZ" \
   --blueprint-id "$BLUEPRINT_ID" \
   --bundle-id "$BUNDLE_ID" \
   --key-pair-name "$KEYPAIR_NAME" \
-  --user-data "$USERDATA" \
   --region "$REGION" >/dev/null
 
 cleanup() {
   log "Cleaning up bake resources..."
   aws lightsail delete-instance --instance-name "$INSTANCE_NAME" \
     --force-delete-add-ons --region "$REGION" >/dev/null 2>&1 || true
-  aws ssm delete-activation --activation-id "$ACTIVATION_ID" \
-    --region "$REGION" >/dev/null 2>&1 || true
-  aws iam detach-role-policy --role-name "$SSM_ROLE" \
-    --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null 2>&1 || true
-  aws iam delete-role --role-name "$SSM_ROLE" --region "$REGION" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

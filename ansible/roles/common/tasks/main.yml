@@ -51,9 +51,9 @@
     classic: true
     state: present
 
-# SSM Agent is pre-installed on Lightsail blueprint images but not on stock
-# Ubuntu. We install via snap so it auto-updates and survives dist-upgrades.
-# Required for SSM hybrid activation (credential delivery, Session Manager).
+# SSM Agent: installed here (after dist-upgrade) so it's guaranteed on the
+# golden snapshot. Required for SSM hybrid activation, credential delivery,
+# and Session Manager access. Auto-updates via snap.
 - name: Install SSM Agent via snap
   community.general.snap:
     name: amazon-ssm-agent
