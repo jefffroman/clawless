@@ -114,13 +114,12 @@ Run once to create the S3 state bucket and write local config files:
 You will be prompted for:
 - **AWS region** — primary region for Lightsail instances (e.g., `us-east-1`)
 - **Alert email** — receives Bedrock budget alerts and backup failure notifications
-- **Clawless version tag** — git tag or branch the Lifecycle Lambda will clone on each run (default: `latest`)
 
 This creates:
 - S3 bucket for OpenTofu state (versioned + encrypted)
 - `tofu/backend.hcl` — backend config (gitignored)
 - `tofu/terraform.tfvars` — variable values (gitignored)
-- SSM Parameter `/clawless/version` — controls which git ref the Lambda clones
+- SSM Parameter `/clawless/version` — set automatically to the current git ref (see [docs/versioning.md](docs/versioning.md))
 
 ### 2. Initialize OpenTofu
 
