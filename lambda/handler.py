@@ -12,6 +12,8 @@ Handles all lifecycle transitions:
   - Resume agent (active: true)  — deletes pause snapshot after tofu restores it
 
 Failure handling:
+  - State lock contention: sleep 15s and retry up to 12 times (~3 min).
+    If still locked, return batchItemFailures so SQS redelivers.
   - Single-slug failure: taint partial state, write /error to SSM, exclude slug,
     retry remaining slugs.  SNS alert for every failure.
   - Mass failure (>1 slug or systemic): stop, alert, let operator investigate.
@@ -43,6 +45,14 @@ SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
+LOCK_RETRY_INTERVAL = 15  # seconds between retries when state lock is held
+LOCK_MAX_RETRIES = 12     # ~3 min total — covers a typical tofu apply
+
+
+class StateLockError(Exception):
+    """Raised when tofu apply fails due to state lock contention."""
+    pass
+
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
@@ -71,14 +81,29 @@ def lambda_handler(event, context):
         if not cfg.get("active", True):
             _maybe_snapshot_for_pause(slug)
 
-    work_dir = tempfile.mkdtemp(dir="/tmp")
-    try:
-        _apply(work_dir, version, agents, affected_slugs, errored_slugs)
-    except Exception as e:
-        print(f"ERROR: {e}")
-        raise
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+    # Retry loop for state lock contention.  Another Lambda invocation may
+    # hold the tofu state lock; sleep and retry rather than failing.
+    records = event.get("Records", [])
+    for attempt in range(1, LOCK_MAX_RETRIES + 2):  # 1 initial + up to 12 retries
+        work_dir = tempfile.mkdtemp(dir="/tmp")
+        try:
+            _apply(work_dir, version, agents, affected_slugs, errored_slugs)
+            break  # success
+        except StateLockError:
+            if attempt > LOCK_MAX_RETRIES:
+                print(f"State lock still held after {LOCK_MAX_RETRIES} retries — returning to SQS")
+                return {
+                    "batchItemFailures": [
+                        {"itemIdentifier": r["messageId"]} for r in records
+                    ]
+                }
+            print(f"State lock held — retry {attempt}/{LOCK_MAX_RETRIES} in {LOCK_RETRY_INTERVAL}s")
+            time.sleep(LOCK_RETRY_INTERVAL)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            raise
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     # Post-apply: delete pause snapshots and orphaned SSM instances for
     # agents that are active. Both operations are idempotent.
@@ -306,13 +331,16 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
 def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
     """Handle a failed batched tofu apply.
 
-    Parse the error to identify the failed slug(s).  If exactly one slug failed,
-    taint its state, write an /error parameter to SSM, exclude it, and retry the
-    remaining slugs.  If multiple slugs failed (systemic issue), alert and stop.
+    State lock contention raises StateLockError for the retry loop.
+    Real failures: parse slug, taint, write /error, alert, retry remaining.
     """
     stderr = error.stderr or ""
     stdout = error.stdout or ""
     output = stderr + stdout
+
+    # State lock contention — let the retry loop handle it
+    if "Error acquiring the state lock" in output:
+        raise StateLockError("tofu state lock held by another invocation")
 
     # Parse failed slugs from tofu error output
     # Tofu errors reference resources like: module.client["test/tess"].aws_lightsail_...
