@@ -134,6 +134,18 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Action   = ["ecr:*", "events:*", "lambda:*"]
         Resource = "*"
       },
+      {
+        Sid    = "SQS"
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:DeleteMessageBatch",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+        ]
+        Resource = [aws_sqs_queue.lifecycle.arn]
+      },
     ]
   })
 }
@@ -147,7 +159,7 @@ resource "aws_lambda_function" "lifecycle" {
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lifecycle.repository_url}:latest"
   timeout       = 900 # 15 min — tofu apply for a client takes 1-3 min
-  memory_size   = 1024
+  memory_size   = 2048
 
   ephemeral_storage {
     size = 1024 # MB — git clone + tofu working dir
@@ -155,8 +167,10 @@ resource "aws_lambda_function" "lifecycle" {
 
   environment {
     variables = {
-      STATE_BUCKET = local.state_bucket
-      REPO_URL     = "https://github.com/jefffroman/clawless"
+      STATE_BUCKET   = local.state_bucket
+      REPO_URL       = "https://github.com/jefffroman/clawless"
+      SQS_QUEUE_URL  = aws_sqs_queue.lifecycle.url
+      SNS_TOPIC_ARN  = aws_sns_topic.alerts.arn
     }
   }
 
@@ -191,16 +205,66 @@ resource "aws_cloudwatch_event_rule" "clients_change" {
   tags = var.tags
 }
 
-resource "aws_cloudwatch_event_target" "lifecycle_lambda" {
-  rule      = aws_cloudwatch_event_rule.clients_change.name
-  target_id = "clawless-lifecycle"
-  arn       = aws_lambda_function.lifecycle.arn
+# ── SQS Queue ──────────────────────────────────────────────────────────────────
+# Events flow: EventBridge → SQS → Lambda (concurrency=1).
+# Lambda drains the queue fully before processing, deduplicates slugs, and runs
+# a single batched tofu apply. This eliminates concurrent invocations and state
+# lock contention.
+
+resource "aws_sqs_queue" "lifecycle" {
+  name                       = "clawless-lifecycle"
+  visibility_timeout_seconds = 960 # Lambda timeout (900s) + 60s buffer
+  message_retention_seconds  = 345600 # 4 days
+  tags                       = var.tags
 }
 
-resource "aws_lambda_permission" "eventbridge" {
-  statement_id  = "AllowEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.lifecycle.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.clients_change.arn
+resource "aws_sqs_queue" "lifecycle_dlq" {
+  name                      = "clawless-lifecycle-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  tags                      = var.tags
+}
+
+resource "aws_sqs_queue_redrive_policy" "lifecycle" {
+  queue_url = aws_sqs_queue.lifecycle.id
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.lifecycle_dlq.arn
+    maxReceiveCount     = 3
+  })
+}
+
+resource "aws_sqs_queue_policy" "lifecycle" {
+  queue_url = aws_sqs_queue.lifecycle.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.lifecycle.arn
+      Condition = {
+        ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.clients_change.arn }
+      }
+    }]
+  })
+}
+
+# EventBridge → SQS (replaces direct Lambda invocation)
+resource "aws_cloudwatch_event_target" "lifecycle_sqs" {
+  rule      = aws_cloudwatch_event_rule.clients_change.name
+  target_id = "clawless-lifecycle-queue"
+  arn       = aws_sqs_queue.lifecycle.arn
+}
+
+# SQS → Lambda event source mapping (triggers Lambda, which then drains the rest)
+resource "aws_lambda_event_source_mapping" "lifecycle_sqs" {
+  event_source_arn                   = aws_sqs_queue.lifecycle.arn
+  function_name                      = aws_lambda_function.lifecycle.arn
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 0 # Invoke immediately — wakes must be fast
+  function_response_types            = ["ReportBatchItemFailures"]
+  enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 2 # Cap at 1 active + 1 warming; no account reservation needed
+  }
 }
