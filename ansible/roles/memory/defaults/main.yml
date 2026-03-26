@@ -1,5 +1,6 @@
 ---
-openclaw_user: ubuntu
+openclaw_user:         ubuntu
+openclaw_service_name: openclaw-gateway
 
 # Agent identity — overridden by storefront at signup time
 agent_name:    "{{ agent_slug }}"
