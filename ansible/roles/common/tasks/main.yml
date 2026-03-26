@@ -116,6 +116,7 @@
     content: |
       alias checkclaw="systemctl --user status openclaw-gateway --no-pager;echo;journalctl --user-unit openclaw-gateway -n 50 --no-pager"
       alias checkboot="ls -la /home/ubuntu/.openclaw/.provisioned;echo;cat /var/log/cloud-init-output.log"
+      alias reprovision="sudo aws s3 sync s3://clawless-tfstate-\$(aws sts get-caller-identity --query Account --output text)/ansible/ /opt/clawless/ansible/ --region us-east-1;cd /opt/clawless/ansible;sudo ansible-playbook playbooks/provision-client.yml -i localhost, -c local -e @/tmp/clawless-client-vars.json"
     owner: ubuntu
     group: ubuntu
     mode: "0644"
