@@ -1,0 +1,73 @@
+---
+# Client tasks: per-client credentials, config, and service startup.
+# Called via: tasks_from: client
+
+- name: Resolve openclaw user home and UID
+  ansible.builtin.command:
+    cmd: "getent passwd {{ openclaw_user }}"
+  register: openclaw_getent
+  changed_when: false
+
+- name: Set derived path facts
+  ansible.builtin.set_fact:
+    openclaw_uid: "{{ openclaw_getent.stdout.split(':')[2] }}"
+    openclaw_home: "{{ openclaw_getent.stdout.split(':')[5] }}"
+    openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
+    openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw/workspace"
+
+- name: Deploy credential_process helper script
+  ansible.builtin.template:
+    src: clawless-creds-helper.j2
+    dest: /usr/local/sbin/clawless-creds-helper
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
+
+- name: Set AWS_DEFAULT_REGION in env file
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_DEFAULT_REGION="
+    line: "AWS_DEFAULT_REGION={{ openclaw_bedrock_region }}"
+  notify: Restart openclaw
+
+# The gateway token is generated on the remote host and written directly to
+# the env file. It is never read back to the control node (no_log + write-only).
+# Idempotent: the lineinfile check preserves an existing token across re-runs.
+- name: Check if gateway token is already set
+  ansible.builtin.shell:
+    cmd: grep -q "^OPENCLAW_GATEWAY_TOKEN=" {{ openclaw_env_file }}
+  register: token_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Generate and write gateway token (first run only)
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^OPENCLAW_GATEWAY_TOKEN="
+    line: "OPENCLAW_GATEWAY_TOKEN={{ lookup('pipe', 'openssl rand -hex 32') }}"
+  no_log: true
+  when: token_check.rc != 0
+  notify: Restart openclaw
+
+- name: Ensure OpenClaw service is enabled and running
+  ansible.builtin.systemd:
+    name: "{{ openclaw_service_name }}"
+    enabled: true
+    state: started
+    scope: user
+  become_user: "{{ openclaw_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
+
+- name: Verify OpenClaw service is active
+  ansible.builtin.command:
+    cmd: systemctl --user is-active {{ openclaw_service_name }}
+  become_user: "{{ openclaw_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
+  register: service_status
+  until: service_status.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false

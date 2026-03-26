@@ -53,9 +53,13 @@
 
   roles:
     - role: searxng
+      tasks_from: client
     - role: openclaw
+      tasks_from: client
     - role: backup
+      tasks_from: client
     - role: memory
+      tasks_from: client
 
   post_tasks:
     - name: Mark instance as provisioned

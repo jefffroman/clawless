@@ -1,0 +1,40 @@
+---
+# Client tasks: backup script with client-specific bucket and slug.
+# Called via: tasks_from: client
+
+- name: Deploy workspace backup script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/clawless-backup
+    mode: "0755"
+    owner: root
+    group: root
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      if aws s3 sync \
+        "{{ openclaw_workspace_dir }}/" \
+        "s3://{{ openclaw_backup_bucket }}/agents/{{ agent_slug }}/workspace/" \
+        --delete \
+        --no-progress; then
+        aws cloudwatch put-metric-data \
+          --region "{{ openclaw_bedrock_region }}" \
+          --namespace "Clawless/Backup" \
+          --metric-name "BackupFailure" \
+          --dimensions "AgentSlug={{ agent_slug | replace('/', '-') }}" \
+          --value 0 --unit Count
+      else
+        aws cloudwatch put-metric-data \
+          --region "{{ openclaw_bedrock_region }}" \
+          --namespace "Clawless/Backup" \
+          --metric-name "BackupFailure" \
+          --dimensions "AgentSlug={{ agent_slug | replace('/', '-') }}" \
+          --value 1 --unit Count
+        exit 1
+      fi
+
+- name: Enable and start backup timer
+  ansible.builtin.systemd:
+    name: clawless-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

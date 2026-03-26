@@ -1,0 +1,99 @@
+---
+# Base tasks: memory infrastructure baked into golden image.
+# Called via: tasks_from: base
+# Requires openclaw path facts (set by openclaw/tasks/base.yml or playbook pre_tasks).
+
+- name: Create workspace subdirectories
+  ansible.builtin.file:
+    path: "{{ openclaw_workspace_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
+  loop:
+    - memory
+    - vector_memory
+
+- name: Deploy workspace .gitignore
+  ansible.builtin.template:
+    src: workspace.gitignore.j2
+    dest: "{{ openclaw_workspace_dir }}/.gitignore"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
+    force: false  # Don't overwrite if already customised
+
+- name: Create Python venv
+  ansible.builtin.command:
+    cmd: python3 -m venv "{{ openclaw_workspace_dir }}/vector_memory/venv"
+    creates: "{{ openclaw_workspace_dir }}/vector_memory/venv/bin/activate"
+  become_user: "{{ openclaw_user }}"
+
+- name: Install memory Python packages
+  ansible.builtin.pip:
+    name:
+      - chromadb
+      - sentence-transformers
+      - networkx
+      - rank-bm25
+    virtualenv: "{{ openclaw_workspace_dir }}/vector_memory/venv"
+    state: present
+  become_user: "{{ openclaw_user }}"
+
+- name: Deploy memory scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ openclaw_workspace_dir }}/vector_memory/{{ item }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
+  loop:
+    - indexer.py
+    - search.py
+    - auto_retrieve.py
+    - configure_openclaw.py
+
+- name: Deploy auto-reindex script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/clawless-reindex
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      WORKSPACE="{{ openclaw_workspace_dir }}"
+      VENV="${WORKSPACE}/vector_memory/venv"
+      cd "${WORKSPACE}"
+      if "${VENV}/bin/python" vector_memory/auto_retrieve.py --status 2>/dev/null \
+          | grep -q '"OUT_OF_SYNC"'; then
+        exec "${VENV}/bin/python" vector_memory/indexer.py
+      fi
+
+- name: Deploy reindex systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clawless-reindex.service
+    content: |
+      [Unit]
+      Description=Clawless memory re-index (runs if MEMORY.md out of sync)
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/clawless-reindex
+      User={{ openclaw_user }}
+  notify: Reload systemd daemon
+
+- name: Deploy reindex systemd timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clawless-reindex.timer
+    content: |
+      [Unit]
+      Description=Clawless memory re-index check every 5 minutes
+
+      [Timer]
+      OnCalendar={{ memory_reindex_schedule }}
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload systemd daemon
