@@ -159,7 +159,7 @@ resource "aws_lambda_function" "lifecycle" {
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lifecycle.repository_url}:latest"
   timeout       = 900 # 15 min — tofu apply for a client takes 1-3 min
-  memory_size   = 1024
+  memory_size   = 2048
 
   ephemeral_storage {
     size = 1024 # MB — git clone + tofu working dir
