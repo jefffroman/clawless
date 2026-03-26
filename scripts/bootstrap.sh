@@ -97,7 +97,8 @@ echo "terraform.tfvars uploaded to s3://${BUCKET}/config/terraform.tfvars"
 # Agent records live under /clawless/clients/{client_slug}/{agent_slug} and are
 # created by add-agent.sh (called below). No bootstrap needed for that hierarchy.
 
-ask CLAWLESS_VERSION "Clawless version tag to deploy" "latest"
+GIT_REF="$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)"
+ask CLAWLESS_VERSION "Clawless version tag to deploy" "$GIT_REF"
 aws ssm put-parameter \
   --name "/clawless/version" \
   --type "String" \
