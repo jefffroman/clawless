@@ -1,6 +1,10 @@
+<img src="clawless-logo.png" alt="Clawless" width="80" align="left">
+
 # Clawless
 
 **An on-demand, resumable, serverless OpenClaw platform for AWS.**
+
+<br clear="left">
 
 Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent instances on AWS Lightsail. Each agent gets its own Lightsail instance, IAM role, Bedrock access, and workspace backed up to S3. Instances can be paused (snapshotted) when idle and resumed in minutes — paying only for storage when paused.
 
