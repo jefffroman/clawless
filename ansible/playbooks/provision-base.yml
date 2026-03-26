@@ -174,7 +174,7 @@
     # Pre-create workspace vector_memory dir so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
       ansible.builtin.file:
-        path: "{{ openclaw_home }}/vector_memory"
+        path: "{{ openclaw_home }}/.openclaw/workspace/vector_memory"
         state: directory
         owner: "{{ openclaw_user }}"
         group: "{{ openclaw_user }}"
@@ -184,8 +184,8 @@
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages
       ansible.builtin.command:
-        cmd: "python3 -m venv {{ openclaw_home }}/vector_memory/venv"
-        creates: "{{ openclaw_home }}/vector_memory/venv/bin/activate"
+        cmd: "python3 -m venv {{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
+        creates: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv/bin/activate"
       become_user: "{{ openclaw_user }}"
 
     - name: Pre-install memory Python packages
@@ -195,7 +195,7 @@
           - sentence-transformers
           - networkx
           - rank-bm25
-        virtualenv: "{{ openclaw_home }}/vector_memory/venv"
+        virtualenv: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
         state: present
       become_user: "{{ openclaw_user }}"
 

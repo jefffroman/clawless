@@ -11,7 +11,7 @@
     openclaw_uid: "{{ openclaw_getent.stdout.split(':')[2] }}"
     openclaw_home: "{{ openclaw_getent.stdout.split(':')[5] }}"
     openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
-    openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}"
+    openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw/workspace"
 
 # S3 workspace restore removed — wake restores from Lightsail snapshot
 # (exact state at pause time). S3 backups are hourly and potentially stale.
