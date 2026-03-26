@@ -161,8 +161,7 @@ Prompts for:
 - **Bot token / channel credentials** — stored as a SecureString in SSM
 
 This writes two SSM parameters:
-- `/clawless/clients/{client-slug}` — client namespace record (String)
-- `/clawless/clients/{client-slug}/{agent-slug}` — agent config including channel credentials (SecureString)
+- `/clawless/clients/{client-slug}/{agent-slug}` — agent config including client name and channel credentials (SecureString)
 
 EventBridge detects the SSM write and triggers the Lifecycle Lambda, which runs `tofu apply` to provision the agent. Full boot-to-ready time is approximately 8–10 minutes.
 

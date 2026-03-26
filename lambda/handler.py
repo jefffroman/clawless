@@ -195,41 +195,33 @@ def _get_agents():
     """Read /clawless/clients hierarchy from SSM, return {agent_path: config} dict.
 
     SSM structure:
-      /clawless/clients/{client_slug}              → {"client_name": "..."}
-      /clawless/clients/{client_slug}/{agent_slug} → {"agent_name": "...", "active": true, ...}
+      /clawless/clients/{client_slug}/{agent_slug}       → {"client_name": "...", "agent_name": "...", "active": true, ...}
       /clawless/clients/{client_slug}/{agent_slug}/error  → error message (if any)
 
-    Returns a dict keyed by "{client_slug}/{agent_slug}" with client_name and _error merged in.
+    Returns a dict keyed by "{client_slug}/{agent_slug}" with _error merged in.
     """
     paginator = ssm.get_paginator("get_parameters_by_path")
 
-    client_records = {}  # {client_slug: {client_name: ...}}
-    agent_records = {}   # {agent_path: {agent_name, active, ...}}
+    agent_records = {}   # {agent_path: {client_name, agent_name, active, ...}}
     error_flags = {}     # {agent_path: str}
 
     for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
         for param in page["Parameters"]:
             parts = param["Name"].split("/")
-            # /clawless/clients/{client_slug}              → 4 parts
             # /clawless/clients/{client_slug}/{agent_slug} → 5 parts
             # /clawless/clients/{client_slug}/{agent_slug}/error → 6 parts
-            if len(parts) == 4:
-                client_slug = parts[3]
-                client_records[client_slug] = json.loads(param["Value"])
-            elif len(parts) == 5:
+            if len(parts) == 5:
                 client_slug, agent_slug = parts[3], parts[4]
                 agent_records[f"{client_slug}/{agent_slug}"] = json.loads(param["Value"])
             elif len(parts) == 6 and parts[5] == "error":
                 client_slug, agent_slug = parts[3], parts[4]
                 error_flags[f"{client_slug}/{agent_slug}"] = param["Value"]
 
-    # Join client_name and error flag into each agent record
+    # Merge error flags into agent records
     agents = {}
     for agent_path, cfg in agent_records.items():
-        client_slug = agent_path.split("/")[0]
         agents[agent_path] = {
             **cfg,
-            "client_name": client_records.get(client_slug, {}).get("client_name", ""),
             "_error": error_flags.get(agent_path),
         }
 

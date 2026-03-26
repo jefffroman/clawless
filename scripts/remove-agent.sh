@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # remove-agent.sh — Remove an agent from SSM, triggering full resource teardown.
 #
-# Deletes the agent's SSM record. If this was the client's last agent, the
-# client namespace record is also deleted. The lifecycle Lambda fires
-# automatically via EventBridge and destroys all AWS resources for the agent.
+# Deletes the agent's SSM record. The lifecycle Lambda fires automatically
+# via EventBridge and destroys all AWS resources for the agent.
 #
 # Usage: ./scripts/remove-agent.sh <client-slug> <agent-slug> [--force] [--region <region>]
 # Example: ./scripts/remove-agent.sh zalman wingmate
@@ -39,7 +38,6 @@ if [[ -z "$REGION" ]]; then
 fi
 
 AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
-CLIENT_PARAM="/clawless/clients/${CLIENT_SLUG}"
 
 hr
 log "Removing agent: ${CLIENT_SLUG}-${AGENT_SLUG}"
@@ -62,20 +60,6 @@ fi
 # Delete agent record
 log "Deleting ${AGENT_PARAM}..."
 aws ssm delete-parameter --name "$AGENT_PARAM" --region "$REGION"
-
-# Check if client has any remaining agents; if not, remove client namespace too
-REMAINING=$(aws ssm get-parameters-by-path \
-  --path "$CLIENT_PARAM" \
-  --recursive \
-  --region "$REGION" \
-  --query 'Parameters[*].Name' \
-  --output json | jq 'length')
-
-if [[ "$REMAINING" -eq 0 ]]; then
-  log "No remaining agents for client '${CLIENT_SLUG}' — removing client namespace..."
-  aws ssm delete-parameter --name "$CLIENT_PARAM" --region "$REGION"
-  log "Client namespace deleted."
-fi
 
 hr
 log "Agent ${CLIENT_SLUG}-${AGENT_SLUG} removed. The lifecycle Lambda will destroy its resources."
