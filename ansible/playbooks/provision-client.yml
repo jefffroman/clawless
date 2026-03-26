@@ -14,6 +14,9 @@
   gather_facts: false
   serial: 5
 
+  vars:
+    openclaw_user: ubuntu
+
   pre_tasks:
     - name: Wait for instance to be reachable via SSH
       when: ansible_connection != 'local'
