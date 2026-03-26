@@ -119,8 +119,10 @@ Bake once before adding your first agent. Re-bake when system packages or base p
 
 Prompts for client name, agent name, channel type, and bot credentials. EventBridge triggers the Lambda automatically — boot-to-ready is ~8 minutes.
 
+Verify the agent is running:
+
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "ls -la /home/ubuntu/.openclaw/.provisioned"
+./scripts/ssm-run.sh --slug <client>-<agent> "checkclaw"
 ```
 
 ---
@@ -132,6 +134,8 @@ Prompts for client name, agent name, channel type, and bot credentials. EventBri
 ```bash
 ./scripts/ssm-run.sh --slug <client>-<agent> "<command>"
 ```
+
+Each instance has convenience aliases: `checkclaw` (service status + recent logs), `checkboot` (provision status + cloud-init log), and `reprovision` (sync latest playbooks from S3 and re-run).
 
 ### Add / remove / pause / resume
 
