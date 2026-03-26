@@ -185,5 +185,11 @@
         remote_src: true
         mode: "0755"
 
+    - name: Overwrite SearXNG SKILL.md with improved version
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/searxng/files/SKILL.md"
+        dest: /usr/lib/node_modules/openclaw/skills/searxng/SKILL.md
+        mode: "0644"
+
     # Memory venv/packages and SearXNG clone/venv/pip are now handled by
     # the respective role base.yml tasks above — no need to duplicate here.
