@@ -63,6 +63,9 @@ SANDBOX_BLOCK = {
     "docker": {
         "image": "openclaw-sandbox-common:bookworm-slim",
         "network": "bridge",
+        "env": {
+            "SEARXNG_URL": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
+        },
         "binds": [
             "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
         ],
