@@ -84,12 +84,10 @@
   notify: Reload systemd daemon
 
 - name: Warm SentenceTransformer model cache
-  ansible.builtin.shell:
+  ansible.builtin.command:
     cmd: >
-      touch "{{ openclaw_workspace_dir }}/MEMORY.md" &&
-      {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
-      {{ openclaw_workspace_dir }}/vector_memory/indexer.py &&
-      rm -f "{{ openclaw_workspace_dir }}/MEMORY.md"
+      {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python -c
+      "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
   become_user: "{{ openclaw_user }}"
 
 - name: Deploy reindex systemd timer
