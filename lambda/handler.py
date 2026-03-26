@@ -422,7 +422,7 @@ def _mark_error(slug, error_message):
     """Write an /error parameter to SSM for the given slug."""
     param_name = f"/clawless/clients/{slug}/error"
     # Truncate to fit SSM parameter value limit (4096 bytes)
-    value = error_message[:4000] if error_message else "Unknown error"
+    value = _strip_ansi(error_message)[:4000] if error_message else "Unknown error"
     try:
         ssm.put_parameter(
             Name=param_name,
@@ -435,6 +435,11 @@ def _mark_error(slug, error_message):
         print(f"WARNING: failed to write error state to {param_name}: {e}")
 
 
+def _strip_ansi(text):
+    """Remove ANSI escape sequences (color codes, cursor moves, etc.)."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
+
 def _send_alert(subject, message):
     """Publish an alert to the SNS topic."""
     if not SNS_TOPIC_ARN:
@@ -444,7 +449,7 @@ def _send_alert(subject, message):
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
             Subject=f"[clawless] {subject}"[:100],
-            Message=message[:10000],
+            Message=_strip_ansi(message)[:10000],
         )
         print(f"Alert sent: {subject}")
     except ClientError as e:
