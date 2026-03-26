@@ -51,15 +51,19 @@
     - name: Gather facts
       ansible.builtin.setup:
 
-  roles:
-    - role: searxng
-      tasks_from: client
-    - role: openclaw
-      tasks_from: client
-    - role: backup
-      tasks_from: client
-    - role: memory
-      tasks_from: client
+  tasks:
+    - include_role:
+        name: searxng
+        tasks_from: client
+    - include_role:
+        name: openclaw
+        tasks_from: client
+    - include_role:
+        name: backup
+        tasks_from: client
+    - include_role:
+        name: memory
+        tasks_from: client
 
   post_tasks:
     - name: Mark instance as provisioned

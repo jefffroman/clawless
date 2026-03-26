@@ -47,14 +47,20 @@
 
   roles:
     - role: common
-    - role: searxng
-      tasks_from: base
-    - role: openclaw
-      tasks_from: base
-    - role: backup
-      tasks_from: base
-    - role: memory
-      tasks_from: base
+
+  tasks:
+    - include_role:
+        name: searxng
+        tasks_from: base
+    - include_role:
+        name: openclaw
+        tasks_from: base
+    - include_role:
+        name: backup
+        tasks_from: base
+    - include_role:
+        name: memory
+        tasks_from: base
 
   post_tasks:
     # Install ansible-core so the instance can self-provision via user_data at boot.
