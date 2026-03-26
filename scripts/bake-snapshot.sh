@@ -188,6 +188,7 @@ else
 fi
 
 # Upload updated tfvars to S3 so the lifecycle Lambda picks up the new snapshot.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="clawless-tfstate-${ACCOUNT_ID}"
 aws s3 cp "$TFVARS" "s3://${STATE_BUCKET}/config/terraform.tfvars"
 log "terraform.tfvars uploaded to s3://${STATE_BUCKET}/config/terraform.tfvars"
