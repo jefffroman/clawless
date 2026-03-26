@@ -1,4 +1,6 @@
 ---
+openclaw_user: ubuntu
+
 # Agent identity — overridden by storefront at signup time
 agent_name:    "{{ agent_slug }}"
 agent_style:   "assistant"

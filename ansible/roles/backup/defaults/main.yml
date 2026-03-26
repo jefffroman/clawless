@@ -1,4 +1,6 @@
 ---
+openclaw_user: ubuntu
+
 # Path to back up. Passed from Terraform via local-exec -e flag.
 # Override if your OpenClaw version uses a different workspace path.
 openclaw_workspace_dir: "{{ openclaw_home }}/.openclaw/workspace"
