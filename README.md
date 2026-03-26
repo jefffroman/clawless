@@ -119,9 +119,10 @@ Bake once before adding your first agent. Re-bake when system packages or base p
 
 Prompts for client name, agent name, channel type, and bot credentials. EventBridge triggers the Lambda automatically — boot-to-ready is ~8 minutes.
 
-Verify the agent is running:
+Verify the agent is provisioned and running:
 
 ```bash
+./scripts/ssm-run.sh --slug <client>-<agent> "checkboot"
 ./scripts/ssm-run.sh --slug <client>-<agent> "checkclaw"
 ```
 
