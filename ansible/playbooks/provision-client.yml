@@ -60,7 +60,7 @@
   post_tasks:
     - name: Mark instance as provisioned
       ansible.builtin.file:
-        path: /home/ubuntu/.openclaw/.provisioned
+        path: "{{ openclaw_state_dir }}/.provisioned"
         state: touch
         modification_time: preserve
         access_time: preserve

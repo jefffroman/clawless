@@ -42,6 +42,7 @@ hr
 
 CURRENT=$(aws ssm get-parameter \
   --name "$AGENT_PARAM" \
+  --with-decryption \
   --query 'Parameter.Value' \
   --output text --region "$REGION" 2>/dev/null || true)
 

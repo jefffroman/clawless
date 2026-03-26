@@ -51,6 +51,21 @@
     classic: true
     state: present
 
+# SSM Agent: installed here (after dist-upgrade) so it's guaranteed on the
+# golden snapshot. Required for SSM hybrid activation, credential delivery,
+# and Session Manager access. Auto-updates via snap.
+- name: Install SSM Agent via snap
+  community.general.snap:
+    name: amazon-ssm-agent
+    classic: true
+    state: present
+
+- name: Ensure SSM Agent is enabled and running
+  ansible.builtin.systemd:
+    name: snap.amazon-ssm-agent.amazon-ssm-agent
+    enabled: true
+    state: started
+
 - name: Configure unattended security upgrades
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/20auto-upgrades
@@ -60,6 +75,49 @@
       APT::Periodic::AutocleanInterval "7";
     owner: root
     group: root
+    mode: "0644"
+
+- name: Install Docker (CE)
+  block:
+    - name: Add Docker GPG key
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        creates: /usr/share/keyrings/docker-archive-keyring.gpg
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch={{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+        state: present
+
+    - name: Install Docker packages
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is enabled and running
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+- name: Add openclaw user (ubuntu) to docker group
+  ansible.builtin.user:
+    name: ubuntu
+    groups: docker
+    append: true
+
+- name: Deploy bash aliases for ubuntu user
+  ansible.builtin.copy:
+    dest: /home/ubuntu/.bash_aliases
+    content: |
+      alias checkclaw="systemctl --user status openclaw-gateway --no-pager;echo;journalctl --user-unit openclaw-gateway -n 50 --no-pager"
+      alias checkboot="ls -la /home/ubuntu/.openclaw/.provisioned;echo;cat /var/log/cloud-init-output.log"
+    owner: ubuntu
+    group: ubuntu
     mode: "0644"
 
 - name: Set timezone to UTC

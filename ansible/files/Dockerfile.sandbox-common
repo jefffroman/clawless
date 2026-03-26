@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    nodejs \
+    npm \
+    git \
+    curl \
+    jq \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh

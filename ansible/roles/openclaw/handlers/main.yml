@@ -5,7 +5,7 @@
     scope: user
   become_user: "{{ openclaw_user }}"
   environment:
-    XDG_RUNTIME_DIR: "/run/user/1000"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
 
 - name: Restart openclaw
   ansible.builtin.systemd:
@@ -14,4 +14,4 @@
     scope: user
   become_user: "{{ openclaw_user }}"
   environment:
-    XDG_RUNTIME_DIR: "/run/user/1000"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"

@@ -1,23 +1,21 @@
 ---
 
-# Restore workspace from S3 before starting OpenClaw. On a fresh instance
-# (first provision) the bucket will be empty and this is a no-op. On resume
-# after a pause the bucket contains the previous workspace, so this restores
-# full agent history and memory before the service starts.
-- name: Check for existing workspace data in S3
+- name: Resolve openclaw user home and UID
   ansible.builtin.command:
-    cmd: aws s3 ls s3://{{ openclaw_backup_bucket }}/workspace/
-  register: s3_workspace_check
+    cmd: "getent passwd {{ openclaw_user }}"
+  register: openclaw_getent
   changed_when: false
-  failed_when: false
 
-- name: Restore workspace from S3 (resume path)
-  ansible.builtin.command:
-    cmd: >
-      aws s3 sync
-      s3://{{ openclaw_backup_bucket }}/workspace/
-      {{ openclaw_workspace_dir }}/
-  when: s3_workspace_check.rc == 0 and s3_workspace_check.stdout != ""
+- name: Set derived path facts
+  ansible.builtin.set_fact:
+    openclaw_uid: "{{ openclaw_getent.stdout.split(':')[2] }}"
+    openclaw_home: "{{ openclaw_getent.stdout.split(':')[5] }}"
+    openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
+    openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw/workspace"
+
+# S3 workspace restore removed — wake restores from Lightsail snapshot
+# (exact state at pause time). S3 backups are hourly and potentially stale.
+# For disaster recovery (instance deleted, no snapshot), use restore-agent.sh.
 
 - name: Ensure OpenClaw config directory exists
   ansible.builtin.file:
@@ -47,7 +45,7 @@
 
 - name: Ensure AWS credentials directory exists
   ansible.builtin.file:
-    path: /home/{{ openclaw_user }}/.aws
+    path: "{{ openclaw_home }}/.aws"
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
@@ -63,7 +61,7 @@
 
 - name: Deploy AWS config with credential_process
   ansible.builtin.copy:
-    dest: /home/{{ openclaw_user }}/.aws/config
+    dest: "{{ openclaw_home }}/.aws/config"
     content: |
       [default]
       credential_process = /usr/local/sbin/clawless-creds-helper
@@ -78,6 +76,13 @@
     path: "{{ openclaw_env_file }}"
     regexp: "^AWS_DEFAULT_REGION="
     line: "AWS_DEFAULT_REGION={{ openclaw_bedrock_region }}"
+  notify: Restart openclaw
+
+- name: Set AWS_PROFILE in env file (triggers SDK config file loading)
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_env_file }}"
+    regexp: "^AWS_PROFILE="
+    line: "AWS_PROFILE=default"
   notify: Restart openclaw
 
 - name: Disable IMDS fallback in env file
@@ -116,7 +121,7 @@
 
 - name: Ensure service drop-in directory exists
   ansible.builtin.file:
-    path: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d
+    path: "{{ openclaw_home }}/.config/systemd/user/{{ openclaw_service_name }}.service.d"
     state: directory
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
@@ -127,7 +132,7 @@
 # the service file.
 - name: Configure OpenClaw systemd unit to load environment file
   ansible.builtin.copy:
-    dest: /home/{{ openclaw_user }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf
+    dest: "{{ openclaw_home }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf"
     content: |
       [Service]
       EnvironmentFile={{ openclaw_env_file }}
@@ -146,14 +151,14 @@
     scope: user
   become_user: "{{ openclaw_user }}"
   environment:
-    XDG_RUNTIME_DIR: "/run/user/1000"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
 
 - name: Verify OpenClaw service is active
   ansible.builtin.command:
     cmd: systemctl --user is-active {{ openclaw_service_name }}
   become_user: "{{ openclaw_user }}"
   environment:
-    XDG_RUNTIME_DIR: "/run/user/1000"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
   register: service_status
   until: service_status.rc == 0
   retries: 60

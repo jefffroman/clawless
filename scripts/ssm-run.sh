@@ -4,12 +4,12 @@
 # Usage: ./scripts/ssm-run.sh <managed-instance-id> <command> [--region <region>]
 #        ./scripts/ssm-run.sh --slug <client-agent-slug> <command> [--region <region>]
 #
-# The slug is the hyphenated form of the agent path: e.g. "zalman-wingmate" for
-# the agent at /clawless/clients/zalman/wingmate.
+# The slug is the hyphenated form of the agent path: e.g. "acme-corp-aria" for
+# the agent at /clawless/clients/acme-corp/aria.
 #
 # Examples:
-#   ./scripts/ssm-run.sh mi-05ab4d8c74833604c "ls /var/lib/openclaw"
-#   ./scripts/ssm-run.sh --slug zalman-wingmate "cat /var/log/cloud-init-output.log"
+#   ./scripts/ssm-run.sh --slug acme-corp-aria "cat /var/log/cloud-init-output.log"
+#   ./scripts/ssm-run.sh mi-0123456789abcdef0 "systemctl status searxng"
 
 set -euo pipefail
 
@@ -49,8 +49,8 @@ fi
 if [[ -n "$SLUG" && -z "$INSTANCE_ID" ]]; then
   INSTANCE_ID=$(aws ssm describe-instance-information \
     --region "$REGION" \
-    --query "InstanceInformationList[?Name=='clawless-${SLUG}' && PingStatus=='Online'].InstanceId | [0]" \
-    --output text)
+    --query "InstanceInformationList[?Name=='clawless-${SLUG}' && PingStatus=='Online'].InstanceId" \
+    --output text | head -1)
   if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
     echo "ERROR: No online SSM instance found for slug '${SLUG}'" >&2
     exit 1

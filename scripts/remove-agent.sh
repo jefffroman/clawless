@@ -42,17 +42,17 @@ AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 CLIENT_PARAM="/clawless/clients/${CLIENT_SLUG}"
 
 hr
-log "Removing agent: ${CLIENT_SLUG}/${AGENT_SLUG}"
+log "Removing agent: ${CLIENT_SLUG}-${AGENT_SLUG}"
 log "  Region: $REGION"
 hr
 
 # Verify agent exists
 if ! aws ssm get-parameter --name "$AGENT_PARAM" --region "$REGION" >/dev/null 2>&1; then
-  log "ERROR: agent '${CLIENT_SLUG}/${AGENT_SLUG}' not found in SSM" >&2; exit 1
+  log "ERROR: agent '${CLIENT_SLUG}-${AGENT_SLUG}' not found in SSM" >&2; exit 1
 fi
 
 if [[ "$FORCE" == false ]]; then
-  echo "This will permanently destroy all AWS resources for ${CLIENT_SLUG}/${AGENT_SLUG}."
+  echo "This will permanently destroy all AWS resources for ${CLIENT_SLUG}-${AGENT_SLUG}."
   read -rp "Type the agent slug to confirm (${AGENT_SLUG}): " CONFIRM
   if [[ "$CONFIRM" != "$AGENT_SLUG" ]]; then
     log "Aborted." >&2; exit 1
@@ -78,5 +78,5 @@ if [[ "$REMAINING" -eq 0 ]]; then
 fi
 
 hr
-log "Agent ${CLIENT_SLUG}/${AGENT_SLUG} removed. The lifecycle Lambda will destroy its resources."
+log "Agent ${CLIENT_SLUG}-${AGENT_SLUG} removed. The lifecycle Lambda will destroy its resources."
 hr

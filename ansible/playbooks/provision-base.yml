@@ -12,6 +12,9 @@
   become: true
   gather_facts: false
 
+  vars:
+    openclaw_user: ubuntu
+
   pre_tasks:
     - name: Wait for instance to be reachable via SSH
       ansible.builtin.wait_for_connection:
@@ -20,6 +23,27 @@
 
     - name: Gather facts
       ansible.builtin.setup:
+
+    - name: Resolve openclaw user home and UID
+      ansible.builtin.command:
+        cmd: "getent passwd {{ openclaw_user }}"
+      register: openclaw_getent
+      changed_when: false
+
+    - name: Set openclaw path facts
+      ansible.builtin.set_fact:
+        openclaw_uid: "{{ openclaw_getent.stdout.split(':')[2] }}"
+        openclaw_home: "{{ openclaw_getent.stdout.split(':')[5] }}"
+        openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
+
+    # Write marker early so we can identify the snapshot even if later tasks fail.
+    - name: Write golden snapshot marker
+      ansible.builtin.copy:
+        content: "{{ golden_snapshot_name | default('unknown') }}\n"
+        dest: /etc/clawless-golden-id
+        owner: root
+        group: root
+        mode: "0644"
 
   roles:
     - role: common
@@ -68,7 +92,7 @@
     # service starts automatically at boot without requiring a login session.
     - name: Enable lingering for openclaw user
       ansible.builtin.command:
-        cmd: loginctl enable-linger ubuntu
+        cmd: loginctl enable-linger {{ openclaw_user }}
       changed_when: false
 
     # Run openclaw onboard as the service user.
@@ -96,28 +120,73 @@
           --skip-skills
           --skip-search
           --skip-health
-        creates: /home/ubuntu/.openclaw/openclaw.json
-      become_user: ubuntu
+        creates: "{{ openclaw_state_dir }}/openclaw.json"
+      become_user: "{{ openclaw_user }}"
       environment:
-        XDG_RUNTIME_DIR: "/run/user/1000"
+        XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
         OPENCLAW_GATEWAY_TOKEN: placeholder-replaced-at-provision-time
+
+    # Build the sandbox-common Docker image so sandbox containers have python3,
+    # nodejs, git, curl, jq. The setup scripts are in the OpenClaw source repo
+    # but not the npm package, so we ship our own Dockerfile.
+    - name: Check if sandbox-common image exists
+      ansible.builtin.command:
+        cmd: docker image inspect openclaw-sandbox-common:bookworm-slim
+      register: sandbox_image_check
+      failed_when: false
+      changed_when: false
+
+    - name: Copy sandbox-common Dockerfile to instance
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/Dockerfile.sandbox-common"
+        dest: /tmp/Dockerfile.sandbox-common
+        mode: "0644"
+      when: sandbox_image_check.rc != 0
+
+    - name: Build openclaw-sandbox-common Docker image
+      ansible.builtin.command:
+        cmd: docker build -t openclaw-sandbox-common:bookworm-slim -f /tmp/Dockerfile.sandbox-common /tmp
+      when: sandbox_image_check.rc != 0
+      async: 600
+      poll: 15
+
+    # Install SearXNG search skill and promote it to a bundled skill.
+    # openclaw skills install downloads from ClawHub into the workspace.
+    # We then copy it into the npm-global skills directory so it's discovered
+    # as a bundled skill — no workspace path or permission juggling needed.
+    - name: Install SearXNG skill from ClawHub
+      ansible.builtin.command:
+        cmd: openclaw skills install searxng
+        creates: /home/{{ openclaw_user }}/.openclaw/workspace/skills/searxng/SKILL.md
+      become_user: "{{ openclaw_user }}"
+      register: searxng_install
+      retries: 3
+      delay: 30
+      until: searxng_install.rc == 0
+
+    - name: Promote SearXNG to bundled skills directory
+      ansible.builtin.copy:
+        src: /home/{{ openclaw_user }}/.openclaw/workspace/skills/searxng/
+        dest: /usr/lib/node_modules/openclaw/skills/searxng/
+        remote_src: true
+        mode: "0755"
 
     # Pre-create workspace vector_memory dir so Python venv install has a home.
     - name: Ensure workspace vector_memory directory exists
       ansible.builtin.file:
-        path: /home/ubuntu/.openclaw/workspace/vector_memory
+        path: "{{ openclaw_home }}/.openclaw/workspace/vector_memory"
         state: directory
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
         mode: "0750"
 
     # Pre-install memory packages so provision-client.yml skips the slow download.
     # The memory role uses creates: on venv creation, so this is idempotent.
     - name: Create Python venv for memory packages
       ansible.builtin.command:
-        cmd: python3 -m venv /home/ubuntu/.openclaw/workspace/vector_memory/venv
-        creates: /home/ubuntu/.openclaw/workspace/vector_memory/venv/bin/activate
-      become_user: ubuntu
+        cmd: "python3 -m venv {{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
+        creates: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv/bin/activate"
+      become_user: "{{ openclaw_user }}"
 
     - name: Pre-install memory Python packages
       ansible.builtin.pip:
@@ -126,18 +195,24 @@
           - sentence-transformers
           - networkx
           - rank-bm25
-        virtualenv: /home/ubuntu/.openclaw/workspace/vector_memory/venv
+        virtualenv: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
         state: present
-      become_user: ubuntu
+      become_user: "{{ openclaw_user }}"
 
-    # Pre-install SearXNG in its venv so provision-client.yml skips the slow pip download.
+    # Pre-clone and install SearXNG so provision-client.yml skips the slow git+pip step.
+    - name: Clone SearXNG source
+      ansible.builtin.git:
+        repo: https://github.com/searxng/searxng.git
+        dest: /opt/searxng/searxng-src
+        depth: 1
+        version: master
+
     - name: Create SearXNG venv
       ansible.builtin.command:
         cmd: python3 -m venv /opt/searxng/venv
         creates: /opt/searxng/venv/bin/activate
 
-    - name: Pre-install SearXNG in venv
+    - name: Install SearXNG requirements into venv
       ansible.builtin.pip:
-        name: searxng
-        state: latest
+        requirements: /opt/searxng/searxng-src/requirements.txt
         virtualenv: /opt/searxng/venv

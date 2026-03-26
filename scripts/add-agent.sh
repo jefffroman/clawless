@@ -109,6 +109,7 @@ else
   # Parameter exists — verify it belongs to the same client
   EXISTING_CLIENT=$(aws ssm get-parameter \
     --name "$CLIENT_PARAM" \
+    --with-decryption \
     --region "${REGION}" \
     --query 'Parameter.Value' \
     --output text | jq -r '.client_name')

@@ -18,6 +18,10 @@ EventBridge → Lifecycle Lambda (tofu apply)
         |       |
         |       +-- user-data: ansible-playbook provision-client.yml (local)
         |       +-- hourly: aws s3 sync workspace → S3 backup bucket
+        |       |
+        |       +-- ubuntu user: runs OpenClaw gateway (user-level systemd)
+        |       +-- agent user: owns workspace (/home/agent), runs tools in Docker sandbox
+        |       +-- SearXNG: local web search (loopback, no API keys)
         |
         +-- per-agent IAM role (Bedrock, S3, CloudWatch)
         +-- per-agent SSM Hybrid Activation (temporary rotating creds)
@@ -27,7 +31,10 @@ EventBridge → Lifecycle Lambda (tofu apply)
 - **Self-provisioning**: Instances configure themselves at boot via user-data (no inbound SSH required after bake).
 - **Admin access**: Via AWS SSM Session Manager — no port 22 open on production instances.
 - **Pause/resume**: Snapshot → destroy instance → restore from snapshot. Workspace persists in S3.
+- **Sandbox isolation**: Tool execution runs in a Docker container (`openclaw-sandbox-common:bookworm-slim`) as the `agent` user. The gateway (ubuntu user) manages the container; tools never run on the host directly.
 - **Agent memory**: 3-layer system — human-editable Markdown, ChromaDB vector search, NetworkX knowledge graph — auto-reindexed every 5 minutes.
+- **Web search**: Self-hosted SearXNG on each instance — no API keys, no per-query costs. Installed as a ClawHub skill (`openclaw skills install searxng`).
+- **Credential delivery**: Lightsail IMDS provides the wrong IAM role, so instances use `credential_process` with a self-assume helper script. The AWS SDK auto-refreshes credentials before expiry.
 - **Lifecycle automation**: All agent operations (add, remove, pause, resume) are driven by SSM parameter changes, triggering the Lifecycle Lambda via EventBridge.
 
 ---
@@ -158,7 +165,7 @@ EventBridge detects the SSM write and triggers the Lifecycle Lambda, which runs 
 Verify an instance is ready:
 
 ```bash
-./scripts/ssm-run.sh --slug <client-slug>-<agent-slug> "cat /var/lib/openclaw/.provisioned"
+./scripts/ssm-run.sh --slug <client-slug>-<agent-slug> "ls -la /home/ubuntu/.openclaw/.provisioned"
 ```
 
 ---
@@ -170,8 +177,8 @@ Verify an instance is ready:
 The `--slug` argument is the hyphenated form of `{client-slug}-{agent-slug}`:
 
 ```bash
-./scripts/ssm-run.sh --slug acme-corp-aria "systemctl status openclaw-gateway"
-./scripts/ssm-run.sh --slug acme-corp-aria "tail -f /var/log/openclaw/openclaw.log"
+./scripts/ssm-run.sh --slug acme-corp-aria "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway"
+./scripts/ssm-run.sh --slug acme-corp-aria "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50"
 ```
 
 ### Check costs
@@ -212,6 +219,34 @@ Pausing snapshots the instance and destroys it. You pay only for the snapshot (~
 ```
 
 The instance is recreated from its pause snapshot. Workspace is restored from S3. No re-provisioning — the instance boots fully configured.
+
+### Restore a destroyed agent (disaster recovery)
+
+If an instance was accidentally deleted and the pause snapshot is gone, restore from S3 backup:
+
+```bash
+./scripts/restore-agent.sh --slug <client>/<agent>
+# Point-in-time recovery (before accidental data corruption):
+./scripts/restore-agent.sh --slug <client>/<agent> --before "2026-03-24T12:00:00"
+```
+
+### Re-trigger the Lifecycle Lambda
+
+If SSM is already correct but the Lambda needs to re-run (e.g., after a code fix):
+
+```bash
+./scripts/trigger-lifecycle.sh
+```
+
+### Build the Lambda container image
+
+After changes to `lambda/Dockerfile` or `lambda/handler.py`, rebuild manually:
+
+```bash
+./scripts/build-lambda.sh
+```
+
+This is also triggered automatically by `tofu apply` when it detects changes.
 
 ### Update Ansible playbooks on running instances
 
@@ -274,7 +309,7 @@ These are listed in `.gitignore`.
 
 **Check if an instance is provisioned:**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "ls -la /var/lib/openclaw/.provisioned"
+./scripts/ssm-run.sh --slug <client>-<agent> "ls -la /home/ubuntu/.openclaw/.provisioned"
 ```
 
 **View provision logs:**
@@ -282,9 +317,12 @@ These are listed in `.gitignore`.
 ./scripts/ssm-run.sh --slug <client>-<agent> "cat /var/log/cloud-init-output.log"
 ```
 
-**Check OpenClaw service:**
+**Check OpenClaw service** (user-level systemd under ubuntu):
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "systemctl status openclaw-gateway && journalctl -u openclaw-gateway -n 50"
+./scripts/ssm-run.sh --slug <client>-<agent> \
+  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway"
+./scripts/ssm-run.sh --slug <client>-<agent> \
+  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50"
 ```
 
 **Check backup status:**
@@ -292,17 +330,10 @@ These are listed in `.gitignore`.
 ./scripts/ssm-run.sh --slug <client>-<agent> "systemctl status clawless-backup.timer"
 ```
 
-**Broken session ("conversation must start with user message" or reasoning content error):**
+**Check SearXNG:**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "rm -f /home/ubuntu/.openclaw/agents/main/sessions/*.jsonl && \
-   echo '{}' > /home/ubuntu/.openclaw/agents/main/sessions/sessions.json && \
-   systemctl restart openclaw-gateway"
+./scripts/ssm-run.sh --slug <client>-<agent> "systemctl status searxng && curl -s http://127.0.0.1:8080/healthz"
 ```
-
-**SSM instance not appearing:** Wait 2–3 minutes after instance creation. If still missing, check that the SSM activation hasn't expired (`tofu apply` creates a new one on each apply).
-
-**Name collision on replace (`names are already in use`):** Lightsail `delete-instance` is asynchronous. The destroy provisioner in `main.tf` polls until the name is released before proceeding.
 
 ---
 
