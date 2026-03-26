@@ -182,9 +182,6 @@ def _drain_and_extract_slugs(event):
             # /clawless/clients/{client}/{agent}[/active|/error] → slug = client/agent
             if len(parts) >= 5:
                 slugs.add(f"{parts[3]}/{parts[4]}")
-            elif len(parts) == 4:
-                # Client-level change — mark for expansion later
-                slugs.add(f"__client__{parts[3]}")
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"WARNING: failed to parse event body: {e}")
 
@@ -293,16 +290,8 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
     # Determine which slugs to apply
     all_slugs = ssm_slugs | removed_slugs
     if affected_slugs is not None:
-        # Expand client-level markers to all agents under that client
-        expanded = set()
-        for s in affected_slugs:
-            if s.startswith("__client__"):
-                client = s[len("__client__"):]
-                expanded.update(k for k in all_slugs if k.startswith(f"{client}/"))
-            else:
-                expanded.add(s)
         # Only apply slugs that are actually known (in SSM or state)
-        apply_slugs = expanded & all_slugs
+        apply_slugs = affected_slugs & all_slugs
     else:
         # Manual invocation — apply all
         apply_slugs = all_slugs
