@@ -2,12 +2,9 @@
 # Register a new agent in the /clawless/clients SSM hierarchy.
 #
 # SSM structure:
-#   /clawless/clients/{client_slug}              → {"client_name": "Acme Corp"}
-#   /clawless/clients/{client_slug}/{agent_slug} → {agent config}
+#   /clawless/clients/{client_slug}/{agent_slug} → {agent config incl. client_name}
 #
-# Client namespace is claimed atomically via --no-overwrite on the client path,
-# preventing two different clients from sharing the same slug. If the client
-# already exists, the existing client_name is verified to match before proceeding.
+# Client slug uniqueness is enforced by the storefront (clawless-platform).
 #
 # Usage: add-agent.sh [--region <region>]
 set -euo pipefail
@@ -93,40 +90,14 @@ case "$CHANNEL" in
     ;;
 esac
 
-# ── Claim client namespace (atomic) ──────────────────────────────────────────
-# --no-overwrite on a per-path SSM parameter is atomic: exactly one caller wins
-# if two race to register the same client slug simultaneously.
-CLIENT_PARAM="/clawless/clients/${CLIENT_SLUG}"
-CLIENT_VALUE="$(jq -cn --arg name "$CLIENT_NAME" '{"client_name": $name}')"
-
-if aws ssm put-parameter \
-     --name "$CLIENT_PARAM" \
-     --type "String" \
-     --value "$CLIENT_VALUE" \
-     --region "${REGION}" 2>/dev/null; then
-  echo "Client namespace '${CLIENT_SLUG}' created."
-else
-  # Parameter exists — verify it belongs to the same client
-  EXISTING_CLIENT=$(aws ssm get-parameter \
-    --name "$CLIENT_PARAM" \
-    --with-decryption \
-    --region "${REGION}" \
-    --query 'Parameter.Value' \
-    --output text | jq -r '.client_name')
-  if [[ "$EXISTING_CLIENT" != "$CLIENT_NAME" ]]; then
-    echo "ERROR: Client slug '${CLIENT_SLUG}' is already taken by '${EXISTING_CLIENT}'." >&2
-    echo "       Choose a different client name, or use '${EXISTING_CLIENT}' to add an agent to that client." >&2
-    exit 1
-  fi
-  echo "Client namespace '${CLIENT_SLUG}' already exists (${EXISTING_CLIENT}) — adding agent."
-fi
-
 # ── Write agent record ────────────────────────────────────────────────────────
 AGENT_VALUE="$(jq -cn \
+  --arg client_name    "$CLIENT_NAME" \
   --arg agent_name     "$AGENT_NAME" \
   --arg agent_channel  "$CHANNEL" \
   --argjson channel_config "$CHANNEL_CONFIG" \
   '{
+    client_name:    $client_name,
     agent_name:     $agent_name,
     active:         true,
     agent_channel:  $agent_channel,

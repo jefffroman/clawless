@@ -48,6 +48,20 @@
   roles:
     - role: common
 
+  tasks:
+    - include_role:
+        name: searxng
+        tasks_from: base
+    - include_role:
+        name: openclaw
+        tasks_from: base
+    - include_role:
+        name: backup
+        tasks_from: base
+    - include_role:
+        name: memory
+        tasks_from: base
+
   post_tasks:
     # Install ansible-core so the instance can self-provision via user_data at boot.
     - name: Install ansible-core
@@ -171,48 +185,11 @@
         remote_src: true
         mode: "0755"
 
-    # Pre-create workspace vector_memory dir so Python venv install has a home.
-    - name: Ensure workspace vector_memory directory exists
-      ansible.builtin.file:
-        path: "{{ openclaw_home }}/.openclaw/workspace/vector_memory"
-        state: directory
-        owner: "{{ openclaw_user }}"
-        group: "{{ openclaw_user }}"
-        mode: "0750"
+    - name: Overwrite SearXNG SKILL.md with improved version
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/searxng/files/SKILL.md"
+        dest: /usr/lib/node_modules/openclaw/skills/searxng/SKILL.md
+        mode: "0644"
 
-    # Pre-install memory packages so provision-client.yml skips the slow download.
-    # The memory role uses creates: on venv creation, so this is idempotent.
-    - name: Create Python venv for memory packages
-      ansible.builtin.command:
-        cmd: "python3 -m venv {{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
-        creates: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv/bin/activate"
-      become_user: "{{ openclaw_user }}"
-
-    - name: Pre-install memory Python packages
-      ansible.builtin.pip:
-        name:
-          - chromadb
-          - sentence-transformers
-          - networkx
-          - rank-bm25
-        virtualenv: "{{ openclaw_home }}/.openclaw/workspace/vector_memory/venv"
-        state: present
-      become_user: "{{ openclaw_user }}"
-
-    # Pre-clone and install SearXNG so provision-client.yml skips the slow git+pip step.
-    - name: Clone SearXNG source
-      ansible.builtin.git:
-        repo: https://github.com/searxng/searxng.git
-        dest: /opt/searxng/searxng-src
-        depth: 1
-        version: master
-
-    - name: Create SearXNG venv
-      ansible.builtin.command:
-        cmd: python3 -m venv /opt/searxng/venv
-        creates: /opt/searxng/venv/bin/activate
-
-    - name: Install SearXNG requirements into venv
-      ansible.builtin.pip:
-        requirements: /opt/searxng/searxng-src/requirements.txt
-        virtualenv: /opt/searxng/venv
+    # Memory venv/packages and SearXNG clone/venv/pip are now handled by
+    # the respective role base.yml tasks above — no need to duplicate here.

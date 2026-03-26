@@ -182,9 +182,6 @@ def _drain_and_extract_slugs(event):
             # /clawless/clients/{client}/{agent}[/active|/error] → slug = client/agent
             if len(parts) >= 5:
                 slugs.add(f"{parts[3]}/{parts[4]}")
-            elif len(parts) == 4:
-                # Client-level change — mark for expansion later
-                slugs.add(f"__client__{parts[3]}")
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"WARNING: failed to parse event body: {e}")
 
@@ -198,41 +195,33 @@ def _get_agents():
     """Read /clawless/clients hierarchy from SSM, return {agent_path: config} dict.
 
     SSM structure:
-      /clawless/clients/{client_slug}              → {"client_name": "..."}
-      /clawless/clients/{client_slug}/{agent_slug} → {"agent_name": "...", "active": true, ...}
+      /clawless/clients/{client_slug}/{agent_slug}       → {"client_name": "...", "agent_name": "...", "active": true, ...}
       /clawless/clients/{client_slug}/{agent_slug}/error  → error message (if any)
 
-    Returns a dict keyed by "{client_slug}/{agent_slug}" with client_name and _error merged in.
+    Returns a dict keyed by "{client_slug}/{agent_slug}" with _error merged in.
     """
     paginator = ssm.get_paginator("get_parameters_by_path")
 
-    client_records = {}  # {client_slug: {client_name: ...}}
-    agent_records = {}   # {agent_path: {agent_name, active, ...}}
+    agent_records = {}   # {agent_path: {client_name, agent_name, active, ...}}
     error_flags = {}     # {agent_path: str}
 
     for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
         for param in page["Parameters"]:
             parts = param["Name"].split("/")
-            # /clawless/clients/{client_slug}              → 4 parts
             # /clawless/clients/{client_slug}/{agent_slug} → 5 parts
             # /clawless/clients/{client_slug}/{agent_slug}/error → 6 parts
-            if len(parts) == 4:
-                client_slug = parts[3]
-                client_records[client_slug] = json.loads(param["Value"])
-            elif len(parts) == 5:
+            if len(parts) == 5:
                 client_slug, agent_slug = parts[3], parts[4]
                 agent_records[f"{client_slug}/{agent_slug}"] = json.loads(param["Value"])
             elif len(parts) == 6 and parts[5] == "error":
                 client_slug, agent_slug = parts[3], parts[4]
                 error_flags[f"{client_slug}/{agent_slug}"] = param["Value"]
 
-    # Join client_name and error flag into each agent record
+    # Merge error flags into agent records
     agents = {}
     for agent_path, cfg in agent_records.items():
-        client_slug = agent_path.split("/")[0]
         agents[agent_path] = {
             **cfg,
-            "client_name": client_records.get(client_slug, {}).get("client_name", ""),
             "_error": error_flags.get(agent_path),
         }
 
@@ -293,16 +282,8 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
     # Determine which slugs to apply
     all_slugs = ssm_slugs | removed_slugs
     if affected_slugs is not None:
-        # Expand client-level markers to all agents under that client
-        expanded = set()
-        for s in affected_slugs:
-            if s.startswith("__client__"):
-                client = s[len("__client__"):]
-                expanded.update(k for k in all_slugs if k.startswith(f"{client}/"))
-            else:
-                expanded.add(s)
         # Only apply slugs that are actually known (in SSM or state)
-        apply_slugs = expanded & all_slugs
+        apply_slugs = affected_slugs & all_slugs
     else:
         # Manual invocation — apply all
         apply_slugs = all_slugs

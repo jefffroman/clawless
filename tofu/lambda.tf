@@ -197,7 +197,7 @@ resource "aws_cloudwatch_event_rule" "clients_change" {
     source        = ["aws.ssm"]
     "detail-type" = ["Parameter Store Change"]
     detail = {
-      name      = [{ prefix = "/clawless/clients/" }]
+      name      = [{ wildcard = "/clawless/clients/*/*" }]
       operation = ["Update", "Create", "Delete"]
     }
   })

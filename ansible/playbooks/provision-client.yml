@@ -14,6 +14,9 @@
   gather_facts: false
   serial: 5
 
+  vars:
+    openclaw_user: ubuntu
+
   pre_tasks:
     - name: Wait for instance to be reachable via SSH
       when: ansible_connection != 'local'
@@ -51,11 +54,19 @@
     - name: Gather facts
       ansible.builtin.setup:
 
-  roles:
-    - role: searxng
-    - role: openclaw
-    - role: backup
-    - role: memory
+  tasks:
+    - include_role:
+        name: searxng
+        tasks_from: client
+    - include_role:
+        name: openclaw
+        tasks_from: client
+    - include_role:
+        name: backup
+        tasks_from: client
+    - include_role:
+        name: memory
+        tasks_from: client
 
   post_tasks:
     - name: Mark instance as provisioned
