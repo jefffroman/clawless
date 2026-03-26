@@ -304,20 +304,22 @@ USERDATA
 
   provisioner "local-exec" {
     when    = destroy
-    # delete-instance is async; poll until the instance is gone so a same-name recreate doesn't collide.
+    # Fire delete-instance and return — don't hold the tofu lock waiting for Lightsail.
+    # The Lambda (and remove.sh) poll for instance disappearance post-apply.
     command = <<-EOT
-      aws lightsail delete-instance \
-        --instance-name ${self.triggers.instance_name} \
-        --force-delete-add-ons \
-        --region ${self.triggers.region} 2>/dev/null || true
-      for i in $(seq 1 60); do
-        aws lightsail get-instance \
-          --instance-name ${self.triggers.instance_name} \
-          --region ${self.triggers.region} \
-          --output text 2>/dev/null || break
+      set -e
+      for attempt in $(seq 1 12); do
+        if aws lightsail delete-instance \
+             --instance-name ${self.triggers.instance_name} \
+             --force-delete-add-ons \
+             --region ${self.triggers.region} 2>&1; then
+          exit 0
+        fi
+        echo "delete-instance attempt $attempt failed, retrying in 5s..."
         sleep 5
       done
-      sleep 10
+      echo "ERROR: failed to delete instance ${self.triggers.instance_name} after 12 attempts" >&2
+      exit 1
     EOT
   }
 }

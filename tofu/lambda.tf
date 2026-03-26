@@ -264,8 +264,31 @@ resource "aws_iam_role_policy" "lifecycle_sfn" {
         Action   = ["lambda:InvokeFunction"]
         Resource = [aws_lambda_function.lifecycle.arn]
       },
+      {
+        Sid    = "Logs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogDelivery",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries",
+          "logs:PutResourcePolicy",
+          "logs:DescribeResourcePolicies",
+          "logs:DescribeLogGroups",
+          "logs:PutLogEvents",
+          "logs:CreateLogStream",
+        ]
+        Resource = ["*"]
+      },
     ]
   })
+}
+
+resource "aws_cloudwatch_log_group" "lifecycle_sfn" {
+  name              = "/aws/vendedlogs/states/clawless-lifecycle"
+  retention_in_days = 14
+  tags              = var.tags
 }
 
 resource "aws_sfn_state_machine" "lifecycle" {
@@ -273,19 +296,36 @@ resource "aws_sfn_state_machine" "lifecycle" {
   role_arn = aws_iam_role.lifecycle_sfn.arn
   type     = "EXPRESS"
 
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.lifecycle_sfn.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
+
   definition = jsonencode({
     Comment = "Write lifecycle event to DynamoDB then invoke Lambda"
-    StartAt = "WriteEvent"
+    StartAt = "ExtractSlug"
     States = {
+      ExtractSlug = {
+        Type = "Pass"
+        Parameters = {
+          "event_id.$"  = "$.event_id"
+          "operation.$" = "$.operation"
+          "time.$"      = "$.time"
+          "name.$"      = "$.name"
+          "slug.$"      = "States.Format('{}/{}', States.ArrayGetItem(States.StringSplit($.name, '/'), 2), States.ArrayGetItem(States.StringSplit($.name, '/'), 3))"
+        }
+        Next = "WriteEvent"
+      }
       WriteEvent = {
         Type     = "Task"
         Resource = "arn:aws:states:::dynamodb:putItem"
         Parameters = {
           "TableName" = aws_dynamodb_table.lifecycle_events.name
           "Item" = {
-            "event_id"  = { "S.$" = "$.id" }
-            "slug"      = { "S.$" = "States.Format('{}/{}', States.ArrayGetItem(States.StringSplit($.detail.name, '/'), 3), States.ArrayGetItem(States.StringSplit($.detail.name, '/'), 4))" }
-            "operation" = { "S.$" = "$.detail.operation" }
+            "event_id"  = { "S.$" = "$.event_id" }
+            "slug"      = { "S.$" = "$.slug" }
+            "operation" = { "S.$" = "$.operation" }
             "timestamp" = { "S.$" = "$.time" }
           }
         }
@@ -294,13 +334,11 @@ resource "aws_sfn_state_machine" "lifecycle" {
       }
       InvokeLambda = {
         Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
+        Resource = "arn:aws:states:::aws-sdk:lambda:invoke"
         Parameters = {
           "FunctionName"   = aws_lambda_function.lifecycle.arn
           "InvocationType" = "Event"
-          "Payload" = {
-            "source" = "step-functions"
-          }
+          "Payload"        = "{\"source\":\"step-functions\"}"
         }
         End = true
       }
@@ -346,6 +384,18 @@ resource "aws_cloudwatch_event_target" "lifecycle_sfn" {
   target_id = "clawless-lifecycle-sfn"
   arn       = aws_sfn_state_machine.lifecycle.arn
   role_arn  = aws_iam_role.eventbridge_sfn.arn
+
+  input_transformer {
+    input_paths = {
+      id        = "$.id"
+      time      = "$.time"
+      name      = "$.detail.name"
+      operation = "$.detail.operation"
+    }
+    input_template = <<-EOT
+      {"event_id": <id>, "time": <time>, "name": <name>, "operation": <operation>}
+    EOT
+  }
 
   dead_letter_config {
     arn = aws_sqs_queue.eventbridge_dlq.arn

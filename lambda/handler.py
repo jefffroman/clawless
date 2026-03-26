@@ -157,8 +157,13 @@ def lambda_handler(event, context):
         _apply_with_retry(version, agents, destroy_slugs, errored_slugs)
 
     # ── Step 11: Post-apply cleanup ──────────────────────────────────────
-    # Deregister orphaned SSM instances for all active agents
-    if not pending_destroys:
+    if pending_destroys:
+        # Wait for Lightsail instances to disappear (destroy provisioner fires
+        # delete-instance but doesn't poll — we do it here outside the tofu lock).
+        for slug, _ in pending_destroys:
+            _wait_for_instance_gone(slug)
+    else:
+        # Deregister orphaned SSM instances for all active agents
         agents = _get_agents()
         for slug, cfg in agents.items():
             if cfg.get("active", True) and not cfg.get("_error"):
@@ -277,6 +282,20 @@ def _start_snapshot(agent_path):
     except ClientError as e:
         if e.response["Error"]["Code"] != "NotFoundException":
             raise
+
+    # Wait for instance to be stopped (stop_instance is async)
+    for i in range(30):
+        inst = lightsail.get_instance(instanceName=instance_name)
+        state = inst["instance"]["state"]["name"]
+        if state == "stopped":
+            break
+        if state not in ("stopping", "running"):
+            print(f"[snapshot:{slug}] unexpected state '{state}' — skipping snapshot")
+            return None
+        time.sleep(2)
+    else:
+        print(f"[snapshot:{slug}] timed out waiting for stopped state — skipping snapshot")
+        return None
 
     print(f"[snapshot:{slug}] creating snapshot {snapshot_name} (non-blocking)...")
     lightsail.create_instance_snapshot(
@@ -594,6 +613,22 @@ def _send_alert(subject, message):
 
 
 # ── Helper functions ─────────────────────────────────────────────────────────
+
+def _wait_for_instance_gone(agent_path, max_wait=300):
+    """Poll until a Lightsail instance no longer exists (deleted by tofu)."""
+    slug = _resource_slug(agent_path)
+    instance_name = f"clawless-{slug}"
+    for i in range(max_wait // 5):
+        try:
+            lightsail.get_instance(instanceName=instance_name)
+            time.sleep(5)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NotFoundException":
+                print(f"[cleanup:{slug}] instance gone")
+                return
+            raise
+    print(f"WARNING: instance {instance_name} still exists after {max_wait}s")
+
 
 def _resource_slug(agent_path):
     """Convert 'client/agent' path to 'client-agent' for AWS resource names."""
