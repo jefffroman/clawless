@@ -176,7 +176,7 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 |-------|-------------|
 | [docs/versioning.md](docs/versioning.md) | How `/clawless/version` controls Lambda behavior |
 | [docs/golden-snapshot.md](docs/golden-snapshot.md) | Two-phase provisioning, what's baked vs. configured at boot |
-| [docs/lifecycle.md](docs/lifecycle.md) | EventBridge → SQS → Lambda flow, error handling, local vs. Lambda applies |
+| [docs/lifecycle.md](docs/lifecycle.md) | EventBridge → Step Functions → DynamoDB + Lambda flow, resume-first processing |
 | [docs/credentials.md](docs/credentials.md) | Credential delivery, `credential_process`, gateway tokens, IMDS workaround |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Checking services, broken sessions, re-provisioning, Lambda debugging |
 
