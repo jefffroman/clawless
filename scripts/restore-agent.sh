@@ -95,15 +95,20 @@ echo "  Instance not found — will recreate."
 hr
 echo "Triggering lifecycle Lambda to recreate instance..."
 
-# Touch the agent's SSM entry to trigger EventBridge → Lambda.
-aws ssm put-parameter \
-  --name "$SSM_PATH" \
-  --value "$SSM_VALUE" \
-  --type String \
-  --overwrite \
+# Invoke Step Functions to write SSM + trigger lifecycle Lambda.
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$SSM_PATH" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg val  "$SSM_VALUE" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update", ssm_value: $val}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
   --region "$REGION" >/dev/null
 
-echo "  SSM parameter touched — EventBridge will invoke the lifecycle Lambda."
+echo "  Step Functions invoked — will write SSM and trigger the lifecycle Lambda."
 echo "  The Lambda will create the instance from the golden snapshot."
 
 # ── Wait for instance to come online ─────────────────────────────────────────

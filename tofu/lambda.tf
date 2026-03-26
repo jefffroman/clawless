@@ -128,7 +128,7 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Resource = "*"
       },
       {
-        # ECR, EventBridge, and Lambda — needed to refresh own resources during tofu apply
+        # ECR, Step Functions, and Lambda — needed to refresh own resources during tofu apply
         Sid      = "SelfManaged"
         Effect   = "Allow"
         Action   = ["ecr:*", "events:*", "lambda:*"]
@@ -139,9 +139,13 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Effect = "Allow"
         Action = [
           "dynamodb:Scan",
+          "dynamodb:UpdateItem",
           "dynamodb:DeleteItem",
+          "dynamodb:GetItem",
         ]
-        Resource = [aws_dynamodb_table.lifecycle_events.arn]
+        Resource = [
+          aws_dynamodb_table.lifecycle_pending.arn,
+        ]
       },
     ]
   })
@@ -164,10 +168,10 @@ resource "aws_lambda_function" "lifecycle" {
 
   environment {
     variables = {
-      STATE_BUCKET  = local.state_bucket
-      REPO_URL      = "https://github.com/jefffroman/clawless"
-      EVENTS_TABLE  = aws_dynamodb_table.lifecycle_events.name
-      SNS_TOPIC_ARN = aws_sns_topic.alerts.arn
+      STATE_BUCKET    = local.state_bucket
+      REPO_URL        = "https://github.com/jefffroman/clawless"
+      LIFECYCLE_TABLE = aws_dynamodb_table.lifecycle_pending.name
+      SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
     }
   }
 
@@ -182,40 +186,28 @@ resource "aws_lambda_function" "lifecycle" {
   tags = var.tags
 }
 
-# ── EventBridge Rule ──────────────────────────────────────────────────────────
-# Fires on any Create/Update/Delete to agent-level parameters under
-# /clawless/clients/*/*. Targets the Step Functions workflow, which writes the
-# event to DynamoDB then invokes the lifecycle Lambda.
 
-resource "aws_cloudwatch_event_rule" "clients_change" {
-  name        = "clawless-clients-change"
-  description = "Trigger lifecycle Lambda on /clawless/clients/* SSM changes"
+# ── DynamoDB Lifecycle Table ──────────────────────────────────────────────────
+# Single table for lifecycle coordination. One record per slug (last-write-wins).
+#
+# Fields:
+#   slug (hash key)   — "client/agent" path
+#   pending (S)       — SSM operation written by SFN: "Create", "Update", "Delete"
+#   in_progress (BOOL)— ownership lock, written only by Lambda
+#   timestamp (S)     — event time, used by Lambda to detect intent changes
+#   ttl (N)           — 1-hour safety net for orphaned records
+#
+# Flow: SFN writes pending+timestamp via UpdateItem (preserves in_progress).
+# Lambda grabs records by setting in_progress=true (conditional on false).
+# One Lambda owns each slug until done — no cross-Lambda coordination.
 
-  event_pattern = jsonencode({
-    source        = ["aws.ssm"]
-    "detail-type" = ["Parameter Store Change"]
-    detail = {
-      name      = [{ wildcard = "/clawless/clients/*/*" }]
-      operation = ["Update", "Create", "Delete"]
-    }
-  })
-
-  tags = var.tags
-}
-
-# ── DynamoDB Event Queue ──────────────────────────────────────────────────────
-# Events flow: EventBridge → Step Functions → DynamoDB PutItem + Lambda invoke.
-# Step Functions guarantees the event is durably written before Lambda starts.
-# Lambda atomically grabs events via DeleteItem (ReturnValues=ALL_OLD) — only
-# one invocation gets each event. No coordination lock needed.
-
-resource "aws_dynamodb_table" "lifecycle_events" {
-  name         = "clawless-lifecycle-events"
+resource "aws_dynamodb_table" "lifecycle_pending" {
+  name         = "clawless-lifecycle-pending"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "event_id"
+  hash_key     = "slug"
 
   attribute {
-    name = "event_id"
+    name = "slug"
     type = "S"
   }
 
@@ -228,7 +220,8 @@ resource "aws_dynamodb_table" "lifecycle_events" {
 }
 
 # ── Step Functions Express Workflow ───────────────────────────────────────────
-# Two sequential steps: write event to DynamoDB, then invoke lifecycle Lambda.
+# Four states: extract slug → write pending (UpdateItem, last-write-wins) →
+# check if a Lambda already owns this slug → invoke Lambda if not.
 
 resource "aws_iam_role" "lifecycle_sfn" {
   name = "clawless-lifecycle-sfn"
@@ -255,8 +248,17 @@ resource "aws_iam_role_policy" "lifecycle_sfn" {
       {
         Sid      = "DynamoDB"
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem"]
-        Resource = [aws_dynamodb_table.lifecycle_events.arn]
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = [aws_dynamodb_table.lifecycle_pending.arn]
+      },
+      {
+        Sid    = "SSM"
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.root.account_id}:parameter/clawless/clients/*"]
       },
       {
         Sid      = "Lambda"
@@ -303,34 +305,79 @@ resource "aws_sfn_state_machine" "lifecycle" {
   }
 
   definition = jsonencode({
-    Comment = "Write lifecycle event to DynamoDB then invoke Lambda"
+    Comment = "SSM write + pending lifecycle event + invoke Lambda if no owner"
     StartAt = "ExtractSlug"
     States = {
       ExtractSlug = {
         Type = "Pass"
         Parameters = {
-          "event_id.$"  = "$.event_id"
-          "operation.$" = "$.operation"
-          "time.$"      = "$.time"
-          "name.$"      = "$.name"
-          "slug.$"      = "States.Format('{}/{}', States.ArrayGetItem(States.StringSplit($.name, '/'), 2), States.ArrayGetItem(States.StringSplit($.name, '/'), 3))"
+          "slug.$" = "States.Format('{}/{}', States.ArrayGetItem(States.StringSplit($.name, '/'), 2), States.ArrayGetItem(States.StringSplit($.name, '/'), 3))"
         }
-        Next = "WriteEvent"
+        ResultPath = "$.extract"
+        Next       = "ChooseSSMAction"
       }
-      WriteEvent = {
+      ChooseSSMAction = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.operation"
+          StringEquals = "Delete"
+          Next         = "DeleteSSM"
+        }]
+        Default = "WriteSSM"
+      }
+      WriteSSM = {
         Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:putItem"
+        Resource = "arn:aws:states:::aws-sdk:ssm:putParameter"
         Parameters = {
-          "TableName" = aws_dynamodb_table.lifecycle_events.name
-          "Item" = {
-            "event_id"  = { "S.$" = "$.event_id" }
-            "slug"      = { "S.$" = "$.slug" }
-            "operation" = { "S.$" = "$.operation" }
-            "timestamp" = { "S.$" = "$.time" }
+          "Name.$"    = "$.name"
+          "Value.$"   = "$.ssm_value"
+          "Type"      = "SecureString"
+          "Overwrite" = true
+        }
+        ResultPath = "$.ssmResult"
+        Next       = "WritePending"
+      }
+      DeleteSSM = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:ssm:deleteParameter"
+        Parameters = {
+          "Name.$" = "$.name"
+        }
+        ResultPath = "$.ssmResult"
+        Next       = "WritePending"
+      }
+      WritePending = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::dynamodb:updateItem"
+        Parameters = {
+          "TableName" = aws_dynamodb_table.lifecycle_pending.name
+          "Key" = {
+            "slug" = { "S.$" = "$.extract.slug" }
           }
+          "UpdateExpression"          = "SET pending = :op, #ts = :ts, in_progress = if_not_exists(in_progress, :false)"
+          "ExpressionAttributeNames"  = { "#ts" = "timestamp" }
+          "ExpressionAttributeValues" = {
+            ":op"    = { "S.$" = "$.operation" }
+            ":ts"    = { "S.$" = "$.time" }
+            ":false" = { "BOOL" = false }
+          }
+          "ReturnValues" = "ALL_NEW"
         }
         ResultPath = "$.dynamoResult"
-        Next       = "InvokeLambda"
+        Next       = "CheckInProgress"
+      }
+      CheckInProgress = {
+        Type = "Choice"
+        Choices = [{
+          Variable      = "$.dynamoResult.Attributes.in_progress.BOOL"
+          BooleanEquals = true
+          Next          = "AlreadyOwned"
+        }]
+        Default = "InvokeLambda"
+      }
+      AlreadyOwned = {
+        Type    = "Succeed"
+        Comment = "Another Lambda already owns this slug — skip invocation"
       }
       InvokeLambda = {
         Type     = "Task"
@@ -346,85 +393,4 @@ resource "aws_sfn_state_machine" "lifecycle" {
   })
 
   tags = var.tags
-}
-
-# ── EventBridge → Step Functions ─────────────────────────────────────────────
-
-resource "aws_iam_role" "eventbridge_sfn" {
-  name = "clawless-eventbridge-sfn"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "events.amazonaws.com" }
-    }]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_iam_role_policy" "eventbridge_sfn" {
-  name = "clawless-eventbridge-sfn"
-  role = aws_iam_role.eventbridge_sfn.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["states:StartExecution"]
-      Resource = [aws_sfn_state_machine.lifecycle.arn]
-    }]
-  })
-}
-
-resource "aws_cloudwatch_event_target" "lifecycle_sfn" {
-  rule      = aws_cloudwatch_event_rule.clients_change.name
-  target_id = "clawless-lifecycle-sfn"
-  arn       = aws_sfn_state_machine.lifecycle.arn
-  role_arn  = aws_iam_role.eventbridge_sfn.arn
-
-  input_transformer {
-    input_paths = {
-      id        = "$.id"
-      time      = "$.time"
-      name      = "$.detail.name"
-      operation = "$.detail.operation"
-    }
-    input_template = <<-EOT
-      {"event_id": <id>, "time": <time>, "name": <name>, "operation": <operation>}
-    EOT
-  }
-
-  dead_letter_config {
-    arn = aws_sqs_queue.eventbridge_dlq.arn
-  }
-
-  retry_policy {
-    maximum_event_age_in_seconds = 86400
-    maximum_retry_attempts       = 185
-  }
-}
-
-# ── EventBridge DLQ ──────────────────────────────────────────────────────────
-# Catches events that exhaust all EventBridge retries (185 over 24h).
-
-resource "aws_sqs_queue" "eventbridge_dlq" {
-  name                      = "clawless-eventbridge-dlq"
-  message_retention_seconds = 1209600 # 14 days
-  tags                      = var.tags
-}
-
-resource "aws_sqs_queue_policy" "eventbridge_dlq" {
-  queue_url = aws_sqs_queue.eventbridge_dlq.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "events.amazonaws.com" }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.eventbridge_dlq.arn
-    }]
-  })
 }

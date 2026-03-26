@@ -1,7 +1,8 @@
 # Lifecycle Automation
 
-All lifecycle operations are driven by changes to the SSM Parameter Store hierarchy
-(`/clawless/clients/{client-slug}/{agent-slug}`). Operators use the scripts in `scripts/` — never `tofu apply` directly for client ops.
+All lifecycle operations are driven by a single Step Functions invocation that handles
+the SSM write, records the event in DynamoDB, and invokes the Lifecycle Lambda.
+Operators use the scripts in `scripts/` — never `tofu apply` directly for client ops.
 
 ## Resource classification
 
@@ -52,59 +53,116 @@ All resources destroyed. Workspace archived to `removed/{slug}/{date}/` in the s
 All agent operations (add, remove, pause, resume) follow the same path:
 
 ```
-SSM parameter change → EventBridge → Step Functions Express Workflow:
-                                       1. DynamoDB PutItem (event record)
-                                       2. Lambda invoke (async)
+Script / UI → Step Functions Express Workflow:
+               1. WriteSSM (PutParameter or DeleteParameter)
+               2. WritePending (DynamoDB UpdateItem — one record per slug, last-write-wins)
+               3. CheckInProgress → Lambda invoke (async, only if no Lambda already owns the slug)
 ```
 
-1. An operator (or the storefront) writes/deletes an SSM parameter under `/clawless/clients/`
-2. EventBridge matches the change (wildcard: `/clawless/clients/*/*`)
-3. A Step Functions Express Workflow writes the event to a DynamoDB table, then invokes the lifecycle Lambda asynchronously
-4. The Lambda atomically grabs events from DynamoDB and processes them
+1. A script (or the UI) constructs the desired SSM value and invokes the Step Functions workflow
+2. SFN writes the agent config to SSM (SecureString) — or deletes it for removals
+3. SFN writes a pending record to DynamoDB (`clawless-lifecycle-pending`) with the operation and timestamp
+4. If no Lambda currently owns the slug (`in_progress = false`), SFN invokes the Lambda asynchronously
+5. If a Lambda already owns the slug, the new event is recorded in DynamoDB (last-write-wins) and the owning Lambda detects the intent change during processing
 
-The EventBridge rule only matches agent-level parameters (5-segment paths). Step Functions guarantees the event is durably written before the Lambda starts — if the Lambda fails or is already running, the event persists in DynamoDB for the next invocation.
+Scripts and the UI only need **one API call** (`start-execution`) — SFN handles both the SSM write and lifecycle coordination.
+
+### SFN states
+
+| State | Type | Purpose |
+|---|---|---|
+| ExtractSlug | Pass | Parse `client/agent` slug from SSM path |
+| ChooseSSMAction | Choice | Delete → DeleteSSM, else → WriteSSM |
+| WriteSSM | Task | `ssm:PutParameter` (SecureString, overwrite) |
+| DeleteSSM | Task | `ssm:DeleteParameter` |
+| WritePending | Task | DynamoDB `UpdateItem` — sets `pending`, `timestamp`, preserves `in_progress` via `if_not_exists` |
+| CheckInProgress | Choice | `in_progress = true` → AlreadyOwned (succeed), else → InvokeLambda |
+| InvokeLambda | Task | Async Lambda invocation |
 
 ## What the Lambda does
 
-The Lambda runs a **resume-first processing loop** that prioritises time-critical operations:
+The Lambda uses a **single-table DynamoDB design** with per-slug ownership:
 
 ```
-PENDING_DESTROYS = []
+GRAB → CLASSIFY → FAST PATH → SLOW PATH → RELEASE
 
-loop:
-  1. Grab events from DynamoDB (atomic DeleteItem per record)
-  2. Read SSM state for affected slugs
-  3. Classify: resumes/adds (fast path) vs pauses/removals (slow path)
-  4. For each pause/removal: stop instance (~5s — agent goes dark immediately)
-  5. For each pause: start snapshot (non-blocking)
-  6. Accumulate pauses/removals in PENDING_DESTROYS
-  7. Run tofu apply for resumes/adds
-  8. Wait for snapshots to complete
-  9. Grab more events → loop if any
+1. GRAB: Scan table → conditional UpdateItem (in_progress=false → true) per slug.
+         Only one Lambda can own a slug at a time.
 
-after loop:
-  10. Run tofu apply for all PENDING_DESTROYS
-  11. Post-apply cleanup
+2. CLASSIFY: Read SSM state for grabbed slugs.
+   - Not in SSM → removal (slow path)
+   - active=false → pause (slow path)
+   - active=true  → resume/add (fast path)
+
+3. FAST PATH: tofu apply for resumes/adds (immediate).
+   - Post-apply: delete pause snapshots, deregister orphaned instances.
+
+4. SLOW PATH: for each pause/removal:
+   a. Stop instance (~5s — agent goes dark immediately)
+   b. Start snapshot (pauses only, non-blocking)
+   c. Poll snapshot — on each poll, check for intent changes:
+      - Timestamp changed → re-read SSM → if now active: abandon snapshot,
+        start_instance (no tofu apply needed — instance was never destroyed)
+   d. After snapshot completes: tofu apply destroy
+   e. After tofu: check intent again (can't interrupt mid-tofu):
+      - If changed to active: run fast-path tofu apply to recreate
+
+5. RELEASE: Conditional DeleteItem (timestamp must match grabbed value).
+   - If condition fails → record was overwritten → unconditional delete.
 ```
 
 **Key properties:**
-- Resumes apply immediately each iteration — never blocked behind pause snapshots
+- Resumes apply immediately — never blocked behind pause snapshots
 - Agents go dark within ~5s of pause (stop_instance), not ~2 min (snapshot + destroy)
+- Abandoned pauses (intent changed mid-snapshot) just restart the instance — no unnecessary tofu apply
 - Removals skip snapshots — S3 workspace backups are the safety net
-- Snapshots run in background while resume tofu applies execute
-- New events arriving during processing get picked up at step 9
+- New events arriving during processing are detected via timestamp comparison
+
+## Per-slug ownership and race handling
+
+The DynamoDB table (`clawless-lifecycle-pending`) has one record per slug:
+
+| Field | Type | Writer | Purpose |
+|---|---|---|---|
+| `slug` | S (hash key) | SFN | `client/agent` path |
+| `pending` | S | SFN only | SSM operation: `"Create"`, `"Update"`, `"Delete"` |
+| `in_progress` | BOOL | Lambda only | Ownership lock |
+| `timestamp` | S | SFN | Event time — used to detect intent changes |
+| `ttl` | N | Lambda | 1-hour safety net for orphaned records |
+
+**Invariants:**
+- SFN never touches `in_progress`. Lambda never touches `pending`.
+- One record per slug. Last SFN write wins.
+- `in_progress = true` means a Lambda owns the slug. Other Lambdas skip it.
+
+### Race scenarios
+
+**Pause then quick resume (before Lambda grabs):**
+SFN overwrites `pending` with the resume's timestamp. Lambda grabs → reads SSM → `active=true` → fast path (no-op if instance still running).
+
+**Pause then resume (Lambda mid-snapshot):**
+Lambda polls snapshot, calls `_intent_changed()` → `true` → reads SSM → `active=true` → abandons snapshot → `start_instance` → done. No tofu apply needed.
+
+**Pause then resume (Lambda mid-tofu-destroy):**
+Can't interrupt tofu. After destroy completes, Lambda checks `_intent_changed()` → `true` → reads SSM → `active=true` → runs fast-path tofu apply to recreate.
+
+**Two Lambdas race on same slug:**
+Both try conditional `UpdateItem(in_progress=false → true)`. DynamoDB serializes: one wins, other gets `ConditionalCheckFailedException` → skips.
+
+**Lambda crashes mid-processing:**
+Record stuck with `in_progress=true`. TTL (1 hour) expires → record auto-deleted. Next event creates a fresh record.
 
 ## Concurrency
 
-DynamoDB `DeleteItem` with `ReturnValues=ALL_OLD` is atomic per item — only one Lambda invocation gets each event record. If two Lambdas race, one gets the event and the other gets nothing (exits or processes other events).
+DynamoDB conditional `UpdateItem` is atomic per item — only one Lambda invocation can own each slug. If two Lambdas race, one gets the lock and the other skips.
 
-For tofu state lock contention (rare — only when an operator runs a local `tofu apply`), the handler retries 15 times at 3-second intervals (45s max). On exhaustion, it sends an SNS alert and exits. Events are already consumed; the unprocessed work appears as drift on the next invocation.
+For tofu state lock contention (rare — only when an operator runs a local `tofu apply`), the handler retries 15 times at 3-second intervals (45s max). On exhaustion, it sends an SNS alert and exits. The unprocessed work appears as drift on the next invocation.
 
 ## Local vs. Lambda applies
 
 **The Lambda handles**: agent-level resources — everything inside `module.client["slug"]`. This includes the Lightsail instance, IAM role, SSM activation, and firewall rules.
 
-**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repo, EventBridge rules, Step Functions workflow, DynamoDB table, SNS topic, CloudWatch alarms, and budget alerts. These resources are not targeted by the Lambda.
+**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repo, Step Functions workflow, DynamoDB table, SNS topic, CloudWatch alarms, and budget alerts. These resources are not targeted by the Lambda.
 
 After changing `lambda/handler.py`, `lambda/Dockerfile`, or any root-level tofu config:
 
@@ -123,13 +181,10 @@ When `tofu apply` fails for an agent:
 3. An SNS alert is sent to the alerts topic
 4. The agent is skipped on subsequent Lambda runs until the `/error` param is manually deleted
 
-To retry a failed agent, delete its error flag:
+To retry a failed agent, delete its error flag and trigger a lifecycle event:
 
 ```bash
 aws ssm delete-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
-./scripts/trigger-lifecycle.sh
 ```
 
-## EventBridge DLQ
-
-If an EventBridge event exhausts all 185 retries (over 24 hours), it lands in the `clawless-eventbridge-dlq` SQS queue. A CloudWatch alarm fires when any message appears in this queue, alerting the operator to investigate.
+Then pause and resume the agent (or use any script that invokes SFN).

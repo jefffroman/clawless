@@ -58,31 +58,6 @@ resource "aws_cloudwatch_metric_alarm" "backup_failure" {
   tags = var.tags
 }
 
-# ── EventBridge DLQ Alarm ─────────────────────────────────────────────────────
-# Fires when EventBridge events exhaust all retries (185 over 24h) and land
-# in the dead-letter queue. Requires operator investigation.
-
-resource "aws_cloudwatch_metric_alarm" "eventbridge_dlq" {
-  alarm_name          = "clawless-eventbridge-dlq-messages"
-  alarm_description   = "Lifecycle EventBridge DLQ has unprocessed events — exhausted all retries, needs investigation"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 300
-  statistic           = "Maximum"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    QueueName = aws_sqs_queue.eventbridge_dlq.name
-  }
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-
-  tags = var.tags
-}
-
 # ── Bedrock Budget ─────────────────────────────────────────────────────────────
 # Aggregate across all clients — per-client tracking requires Application
 # Inference Profiles and is deferred.
