@@ -161,8 +161,6 @@ resource "aws_lambda_function" "lifecycle" {
   timeout       = 900 # 15 min — tofu apply for a client takes 1-3 min
   memory_size   = 1024
 
-  reserved_concurrent_executions = 1
-
   ephemeral_storage {
     size = 1024 # MB — git clone + tofu working dir
   }
@@ -265,4 +263,8 @@ resource "aws_lambda_event_source_mapping" "lifecycle_sqs" {
   maximum_batching_window_in_seconds = 0 # Invoke immediately — wakes must be fast
   function_response_types            = ["ReportBatchItemFailures"]
   enabled                            = true
+
+  scaling_config {
+    maximum_concurrency = 2 # Cap at 1 active + 1 warming; no account reservation needed
+  }
 }
