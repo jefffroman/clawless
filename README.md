@@ -111,7 +111,7 @@ tofu init -backend-config=backend.hcl
 ./scripts/bake-snapshot.sh
 ```
 
-Bake once before adding your first agent. Re-bake when system packages or base playbooks change. Takes ~15 minutes. See [docs/golden-snapshot.md](docs/golden-snapshot.md).
+Bake once before adding your first agent. Re-bake when system packages or base playbooks change. First bake takes ~15 minutes; subsequent bakes are incremental (start from the previous snapshot) and take ~10 minutes. See [docs/golden-snapshot.md](docs/golden-snapshot.md).
 
 ### 4. Add Your First Agent
 
@@ -119,7 +119,7 @@ Bake once before adding your first agent. Re-bake when system packages or base p
 ./scripts/add-agent.sh
 ```
 
-Prompts for client name, agent name, channel type, and bot credentials. The script invokes Step Functions which writes the agent config to SSM and triggers the Lifecycle Lambda — boot-to-ready is ~8 minutes.
+Prompts for client name, agent name, channel type, and bot credentials. The script invokes Step Functions which writes the agent config to SSM and triggers the Lifecycle Lambda — boot-to-ready takes ~8 minutes.
 
 Verify the agent is provisioned and running:
 
@@ -143,10 +143,10 @@ Each instance has convenience aliases: `checkclaw` (service status + recent logs
 ### Add / remove / pause / resume
 
 ```bash
-./scripts/add-agent.sh
-./scripts/remove-agent.sh <client-slug> <agent-slug>
-./scripts/pause-agent.sh <client-slug> <agent-slug>
-./scripts/resume-agent.sh <client-slug> <agent-slug>
+./scripts/add-agent.sh                                  # interactive prompts
+./scripts/remove-agent.sh <client-slug> <agent-slug>    # full teardown
+./scripts/pause-agent.sh <client-slug> <agent-slug>     # snapshot + destroy (~2 min)
+./scripts/resume-agent.sh <client-slug> <agent-slug>    # restore from snapshot (~60s)
 ```
 
 ### Check costs

@@ -20,7 +20,7 @@ The golden snapshot includes everything that doesn't vary per client:
 - SearXNG (git clone, Python venv, pip packages, systemd unit)
 - Memory system (Python venv, ChromaDB, sentence-transformers, NetworkX)
 - SentenceTransformer model weights (pre-cached at bake time)
-- Ansible playbooks at `/opt/clawless/ansible/`
+- Ansible playbooks at `/opt/clawless/ansible/` (only client-facing files: `provision-client.yml`, `ansible.cfg`, and each role's `client.yml`, defaults, and templates)
 - `ansible-core` (so instances can self-provision via user-data)
 - SearXNG ClawHub skill (promoted to bundled skills directory)
 - Bash aliases (`checkclaw`, `checkboot`, `reprovision`)
