@@ -14,8 +14,13 @@ output "state_bucket" {
 }
 
 output "lifecycle_lambda_arn" {
-  description = "ARN of the lifecycle Lambda. clawless-platform can invoke this directly to trigger client provisioning outside of the SSM → EventBridge path."
+  description = "ARN of the lifecycle Lambda."
   value       = aws_lambda_function.lifecycle.arn
+}
+
+output "lifecycle_sfn_arn" {
+  description = "ARN of the lifecycle Step Functions state machine. Scripts and platform invoke this directly after SSM changes to trigger lifecycle processing."
+  value       = aws_sfn_state_machine.lifecycle.arn
 }
 
 output "archive_bucket" {

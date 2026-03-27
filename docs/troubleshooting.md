@@ -67,10 +67,11 @@ aws logs tail /aws/lambda/clawless-lifecycle --since 1h --region us-east-1
 aws ssm get-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
 ```
 
-**Clear error flag and retry:**
+**Clear error flag and retry** (pause then resume to trigger the lifecycle Lambda):
 ```bash
 aws ssm delete-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
-./scripts/trigger-lifecycle.sh
+./scripts/pause-agent.sh <client> <agent>
+./scripts/resume-agent.sh <client> <agent>
 ```
 
 ## Credentials

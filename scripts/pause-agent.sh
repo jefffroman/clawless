@@ -53,14 +53,21 @@ if [[ "$(echo "$CURRENT" | jq -r '.active != false')" == "false" ]]; then
   log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already paused" >&2; exit 1
 fi
 
-log "Updating ${AGENT_PARAM} (active=false)..."
-UPDATED=$(echo "$CURRENT" | jq '.active = false')
-aws ssm put-parameter \
-  --name "$AGENT_PARAM" \
-  --type String \
-  --overwrite \
-  --value "$UPDATED" \
+UPDATED=$(echo "$CURRENT" | jq -c '.active = false')
+
+log "Invoking Step Functions (SSM write + lifecycle)..."
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$AGENT_PARAM" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg val  "$UPDATED" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update", ssm_value: $val}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
   --region "$REGION" >/dev/null
+log "Step Functions invoked."
 
 hr
 log "Pause triggered. The lifecycle Lambda will snapshot and destroy the instance."

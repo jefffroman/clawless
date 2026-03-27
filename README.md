@@ -16,7 +16,7 @@ Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent instances on 
 SSM Parameter Store (/clawless/clients/{client}/{agent})
         |
         v
-EventBridge → Lifecycle Lambda (tofu apply)
+Step Functions → DynamoDB (pending) → Lifecycle Lambda (tofu apply)
         |
         +-- per-agent Lightsail instance (from golden snapshot)
         |       |
@@ -38,7 +38,7 @@ EventBridge → Lifecycle Lambda (tofu apply)
 - **Sandbox isolation**: Tool execution runs in a Docker container as the `ubuntu` user. The gateway manages the container; tools never run on the host directly.
 - **Agent memory**: 3-layer system — human-editable Markdown, ChromaDB vector search, NetworkX knowledge graph — auto-reindexed every 5 minutes.
 - **Web search**: Self-hosted SearXNG on each instance — no API keys, no per-query costs.
-- **Lifecycle automation**: All agent operations are driven by SSM parameter changes, triggering the Lifecycle Lambda via EventBridge. See [docs/lifecycle.md](docs/lifecycle.md).
+- **Lifecycle automation**: All agent operations are driven by a single Step Functions invocation that writes to SSM, records the event in DynamoDB, and invokes the Lifecycle Lambda. See [docs/lifecycle.md](docs/lifecycle.md).
 
 ---
 
@@ -70,7 +70,7 @@ You need an IAM user or role with the following permissions:
 ```
 lightsail:*    s3:*          iam:*       ssm:*
 sns:*          cloudwatch:*  budgets:*   ecr:*
-events:*       lambda:*      bedrock:InvokeModel
+states:*       lambda:*      dynamodb:*  bedrock:InvokeModel
 ce:GetCostAndUsage (for check-costs.py)
 ```
 
@@ -117,7 +117,7 @@ Bake once before adding your first agent. Re-bake when system packages or base p
 ./scripts/add-agent.sh
 ```
 
-Prompts for client name, agent name, channel type, and bot credentials. EventBridge triggers the Lambda automatically — boot-to-ready is ~8 minutes.
+Prompts for client name, agent name, channel type, and bot credentials. The script invokes Step Functions which writes the agent config to SSM and triggers the Lifecycle Lambda — boot-to-ready is ~8 minutes.
 
 Verify the agent is provisioned and running:
 
@@ -176,7 +176,7 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 |-------|-------------|
 | [docs/versioning.md](docs/versioning.md) | How `/clawless/version` controls Lambda behavior |
 | [docs/golden-snapshot.md](docs/golden-snapshot.md) | Two-phase provisioning, what's baked vs. configured at boot |
-| [docs/lifecycle.md](docs/lifecycle.md) | EventBridge → SQS → Lambda flow, error handling, local vs. Lambda applies |
+| [docs/lifecycle.md](docs/lifecycle.md) | Step Functions → SSM + DynamoDB → Lambda flow, per-slug ownership, race handling |
 | [docs/credentials.md](docs/credentials.md) | Credential delivery, `credential_process`, gateway tokens, IMDS workaround |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Checking services, broken sessions, re-provisioning, Lambda debugging |
 

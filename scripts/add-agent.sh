@@ -104,14 +104,23 @@ AGENT_VALUE="$(jq -cn \
     channel_config: $channel_config
   }')"
 
-aws ssm put-parameter \
-  --name "/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}" \
-  --type "SecureString" \
-  --value "$AGENT_VALUE" \
-  --overwrite \
-  --region "${REGION}"
+AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
+
+echo "Invoking Step Functions (SSM write + lifecycle)..."
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$AGENT_PARAM" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg val  "$AGENT_VALUE" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Create", ssm_value: $val}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
+  --region "$REGION" >/dev/null
+echo "Step Functions invoked."
 
 hr
-echo "Agent '${AGENT_NAME}' registered at /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}."
+echo "Agent '${AGENT_NAME}' registered at ${AGENT_PARAM}."
 echo "Resource slug: ${CLIENT_SLUG}-${AGENT_SLUG}"
 hr

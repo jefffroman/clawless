@@ -15,7 +15,6 @@
 # Project notes — excluded from public repo; live in the private platform repo
 CLAUDE.md
 CONTEXT.md
-LIFECYCLE.md
 
 # Ansible — generated and secret files
 ansible/inventory/hosts.yml

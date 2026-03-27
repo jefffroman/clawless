@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# remove-agent.sh — Remove an agent from SSM, triggering full resource teardown.
+# remove-agent.sh — Remove an agent, triggering full resource teardown.
 #
-# Deletes the agent's SSM record. The lifecycle Lambda fires automatically
-# via EventBridge and destroys all AWS resources for the agent.
+# Invokes the lifecycle Step Functions workflow which deletes the agent's
+# SSM record and triggers the Lambda to destroy all AWS resources.
 #
 # Usage: ./scripts/remove-agent.sh <client-slug> <agent-slug> [--force] [--region <region>]
 # Example: ./scripts/remove-agent.sh zalman wingmate
@@ -57,9 +57,18 @@ if [[ "$FORCE" == false ]]; then
   fi
 fi
 
-# Delete agent record
-log "Deleting ${AGENT_PARAM}..."
-aws ssm delete-parameter --name "$AGENT_PARAM" --region "$REGION"
+log "Invoking Step Functions (SSM delete + lifecycle)..."
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$AGENT_PARAM" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Delete"}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
+  --region "$REGION" >/dev/null
+log "Step Functions invoked."
 
 hr
 log "Agent ${CLIENT_SLUG}-${AGENT_SLUG} removed. The lifecycle Lambda will destroy its resources."

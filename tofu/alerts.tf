@@ -58,31 +58,6 @@ resource "aws_cloudwatch_metric_alarm" "backup_failure" {
   tags = var.tags
 }
 
-# ── Lifecycle DLQ Alarm ────────────────────────────────────────────────────────
-# Fires when messages land in the dead-letter queue after 3 failed processing
-# attempts. Requires operator investigation.
-
-resource "aws_cloudwatch_metric_alarm" "lifecycle_dlq" {
-  alarm_name          = "clawless-lifecycle-dlq-messages"
-  alarm_description   = "Lifecycle Lambda DLQ has unprocessed messages — events failed 3x and need investigation"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 300
-  statistic           = "Maximum"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    QueueName = aws_sqs_queue.lifecycle_dlq.name
-  }
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-
-  tags = var.tags
-}
-
 # ── Bedrock Budget ─────────────────────────────────────────────────────────────
 # Aggregate across all clients — per-client tracking requires Application
 # Inference Profiles and is deferred.

@@ -1,19 +1,26 @@
 """
 Clawless lifecycle Lambda.
 
-Triggered by SQS (fed by EventBridge) on changes to the /clawless/clients SSM
-hierarchy.  Drains the queue fully, deduplicates affected slugs, reads current
-state from SSM, and runs a single batched `tofu apply`.
+Triggered by Step Functions on lifecycle changes.  Scripts and the UI invoke SFN
+directly; SFN handles the SSM write, writes a pending record to DynamoDB (one per
+slug, last-write-wins), and invokes the Lambda only if no other Lambda already owns
+that slug.
+
+The Lambda atomically grabs unowned records by setting in_progress=true (conditional
+on false).  One Lambda owns each slug until done — no cross-Lambda coordination.
+
+Processing loop prioritises resumes/adds (fast path) over pauses/removals
+(slow path).  Pauses and removals are stopped immediately so the agent goes
+dark within seconds, but the tofu destroy is batched at the end.
 
 Handles all lifecycle transitions:
   - Add agent    (new path in /clawless/clients/{client}/{agent})
   - Remove agent (path deleted from SSM)
-  - Pause agent  (active: false) — snapshots instance before tofu destroys it
-  - Resume agent (active: true)  — deletes pause snapshot after tofu restores it
+  - Pause agent  (active: false) — stops instance, snapshots, then destroys
+  - Resume agent (active: true)  — creates from snapshot, deletes pause snapshot
 
 Failure handling:
-  - State lock contention: sleep 15s and retry up to 12 times (~3 min).
-    If still locked, return batchItemFailures so SQS redelivers.
+  - State lock contention: retry 15 times at 3s intervals (45s max).
   - Single-slug failure: taint partial state, write /error to SSM, exclude slug,
     retry remaining slugs.  SNS alert for every failure.
   - Mass failure (>1 slug or systemic): stop, alert, let operator investigate.
@@ -33,7 +40,7 @@ from botocore.exceptions import ClientError
 
 ssm = boto3.client("ssm")
 s3 = boto3.client("s3")
-sqs = boto3.client("sqs")
+dynamodb = boto3.client("dynamodb")
 sns = boto3.client("sns")
 lightsail = boto3.client("lightsail")
 sts = boto3.client("sts")
@@ -41,12 +48,12 @@ sts = boto3.client("sts")
 STATE_BUCKET = os.environ["STATE_BUCKET"]
 REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
-SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL", "")
+LIFECYCLE_TABLE = os.environ.get("LIFECYCLE_TABLE", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
-LOCK_RETRY_INTERVAL = 15  # seconds between retries when state lock is held
-LOCK_MAX_RETRIES = 12     # ~3 min total — covers a typical tofu apply
+LOCK_RETRY_INTERVAL = 3   # seconds between retries when state lock is held
+LOCK_MAX_RETRIES = 15     # 45s total — covers brief contention from local applies
 
 
 class StateLockError(Exception):
@@ -59,134 +66,375 @@ class StateLockError(Exception):
 def lambda_handler(event, context):
     print(f"Event: {json.dumps(event)}")
 
-    # Determine affected slugs from the event.
-    # SQS trigger: drain the queue and extract slugs from all messages.
-    # Manual/direct invoke: apply all agents (fallback behavior).
-    affected_slugs = _drain_and_extract_slugs(event)
-
     version = ssm.get_parameter(Name="/clawless/version")["Parameter"]["Value"]
     print(f"Clawless version: {version}")
 
-    agents = _get_agents()
+    # ── Step 1: GRAB — atomically claim unowned records ────────────────
+    grabbed = _grab_all()
+    if not grabbed:
+        print("Nothing to grab — done")
+        return {"status": "noop"}
 
-    # Skip agents with an existing /error parameter — operator must clear first.
+    print(f"Grabbed {len(grabbed)} slug(s): {sorted(grabbed.keys())}")
+
+    # ── Step 2: CLASSIFY — read SSM to determine intent ────────────────
+    agents = _get_agents()
     errored_slugs = {slug for slug, cfg in agents.items() if cfg.get("_error")}
     if errored_slugs:
         print(f"Skipping agents with /error state: {sorted(errored_slugs)}")
 
-    # Pre-apply: snapshot any instances that are about to be paused.
-    for slug, cfg in agents.items():
+    fast_slugs = set()   # resumes + adds — apply immediately
+    slow_slugs = set()   # pauses + removals — stop now, destroy later
+
+    for slug in grabbed:
         if slug in errored_slugs:
             continue
-        if not cfg.get("active", True):
-            _maybe_snapshot_for_pause(slug)
+        if slug not in agents:
+            slow_slugs.add(slug)
+        elif not agents[slug].get("active", True):
+            slow_slugs.add(slug)
+        else:
+            fast_slugs.add(slug)
 
-    # Retry loop for state lock contention.  Another Lambda invocation may
-    # hold the tofu state lock; sleep and retry rather than failing.
-    records = event.get("Records", [])
-    for attempt in range(1, LOCK_MAX_RETRIES + 2):  # 1 initial + up to 12 retries
-        work_dir = tempfile.mkdtemp(dir="/tmp")
-        try:
-            _apply(work_dir, version, agents, affected_slugs, errored_slugs)
-            break  # success
-        except StateLockError:
-            if attempt > LOCK_MAX_RETRIES:
-                print(f"State lock still held after {LOCK_MAX_RETRIES} retries — returning to SQS")
-                return {
-                    "batchItemFailures": [
-                        {"itemIdentifier": r["messageId"]} for r in records
-                    ]
-                }
-            print(f"State lock held — retry {attempt}/{LOCK_MAX_RETRIES} in {LOCK_RETRY_INTERVAL}s")
-            time.sleep(LOCK_RETRY_INTERVAL)
-        except Exception as e:
-            print(f"ERROR: {e}")
-            raise
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+    # ── Step 3: FAST PATH — tofu apply for resumes/adds ────────────────
+    if fast_slugs:
+        print(f"Fast path (resumes/adds): {sorted(fast_slugs)}")
+        _apply_with_retry(version, agents, fast_slugs, errored_slugs)
 
-    # Post-apply: delete pause snapshots and orphaned SSM instances for
-    # agents that are active. Both operations are idempotent.
-    for slug, cfg in agents.items():
-        if slug in errored_slugs:
-            continue
-        if cfg.get("active", True):
-            _maybe_delete_pause_snapshot(slug)
-            _deregister_offline_instances(slug)
+        for slug in fast_slugs:
+            if slug in agents and agents[slug].get("active", True):
+                _maybe_delete_pause_snapshot(slug)
+                _deregister_offline_instances(slug)
+
+    # ── Step 4: SLOW PATH — stop, snapshot, destroy ────────────────────
+    if slow_slugs:
+        # Stop all instances immediately (agent goes dark in ~5s)
+        for slug in sorted(slow_slugs):
+            _stop_instance(slug)
+
+        # Start snapshots for pauses (not removals)
+        pending_snapshots = {}
+        pause_slugs = {s for s in slow_slugs if s in agents}
+        for slug in sorted(pause_slugs):
+            snap_name = _start_snapshot(slug)
+            if snap_name:
+                pending_snapshots[snap_name] = slug
+
+        # Wait for snapshots, checking for intent changes during polling
+        abandoned = set()
+        if pending_snapshots:
+            abandoned = _wait_for_snapshots(pending_snapshots, grabbed)
+
+        # Slugs abandoned mid-snapshot (intent changed to resume):
+        # instance was stopped but never destroyed (tofu state intact),
+        # so just restart it — no tofu apply needed.
+        if abandoned:
+            print(f"Abandoned pauses (intent changed): {sorted(abandoned)}")
+            for slug in abandoned:
+                _start_instance(slug)
+                slow_slugs.discard(slug)
+
+        # Destroy remaining slow slugs
+        destroy_slugs = slow_slugs - abandoned
+        if destroy_slugs:
+            print(f"Slow path (pauses/removals): {sorted(destroy_slugs)}")
+            agents = _get_agents()
+            errored_slugs = {slug for slug, cfg in agents.items() if cfg.get("_error")}
+            _apply_with_retry(version, agents, destroy_slugs, errored_slugs)
+
+            # Post-destroy: check intent changed during tofu apply
+            for slug in list(destroy_slugs):
+                if _intent_changed(slug, grabbed[slug]["timestamp"]):
+                    print(f"[release:{slug}] intent changed during destroy — re-checking")
+                    agents = _get_agents()
+                    if slug in agents and agents[slug].get("active", True):
+                        print(f"[release:{slug}] now active — recreating via fast path")
+                        errored_slugs = {s for s, c in agents.items() if c.get("_error")}
+                        _apply_with_retry(version, agents, {slug}, errored_slugs)
+                        _maybe_delete_pause_snapshot(slug)
+                        _deregister_offline_instances(slug)
+
+            # Wait for destroyed instances to disappear
+            for slug in destroy_slugs:
+                if not _intent_changed(slug, grabbed[slug]["timestamp"]):
+                    _wait_for_instance_gone(slug)
+
+    # ── Step 5: RELEASE — conditional delete for each owned slug ───────
+    for slug, info in grabbed.items():
+        _release(slug, info["timestamp"])
 
     return {"status": "success"}
 
 
-# ── SQS drain & slug extraction ─────────────────────────────────────────────
+# ── DynamoDB lifecycle table ─────────────────────────────────────────────────
 
-def _drain_and_extract_slugs(event):
-    """Drain all messages from the SQS queue and return the set of affected agent slugs.
+def _grab_all():
+    """Atomically grab all unowned records from the lifecycle table.
 
-    The initial SQS trigger batch is in event["Records"].  We then poll the queue
-    until empty to collect any messages that arrived while we were starting up.
-    All messages are deleted — they are triggers, not data.
-
-    Returns None if this is a manual/direct invocation (apply all agents).
+    Scans the table, then does a conditional UpdateItem on each record to set
+    in_progress=true (only if currently false). Returns {slug: {timestamp, pending}}
+    for successfully grabbed records. Sets TTL on grab as a crash safety net.
     """
-    records = event.get("Records", [])
-    if not records:
-        print("No SQS records — manual invocation, will apply all agents")
+    if not LIFECYCLE_TABLE:
+        print("No LIFECYCLE_TABLE configured — manual invocation")
+        return {}
+
+    items = []
+    response = dynamodb.scan(TableName=LIFECYCLE_TABLE)
+    items.extend(response.get("Items", []))
+    while response.get("LastEvaluatedKey"):
+        response = dynamodb.scan(
+            TableName=LIFECYCLE_TABLE,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    if not items:
+        return {}
+
+    grabbed = {}
+    ttl = int(time.time()) + 3600  # 1 hour safety net
+
+    for item in items:
+        slug = item["slug"]["S"]
+        # Skip records already owned by another Lambda
+        if item.get("in_progress", {}).get("BOOL", False):
+            print(f"[grab] {slug} already in_progress — skipping")
+            continue
+
+        try:
+            resp = dynamodb.update_item(
+                TableName=LIFECYCLE_TABLE,
+                Key={"slug": {"S": slug}},
+                UpdateExpression="SET in_progress = :true, #ttl = :ttl",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":true": {"BOOL": True},
+                    ":false": {"BOOL": False},
+                    ":ttl": {"N": str(ttl)},
+                },
+                ConditionExpression="in_progress = :false",
+                ReturnValues="ALL_NEW",
+            )
+            attrs = resp.get("Attributes", {})
+            grabbed[slug] = {
+                "timestamp": attrs.get("timestamp", {}).get("S", ""),
+                "pending": attrs.get("pending", {}).get("S", ""),
+            }
+            print(f"[grab] {slug} — grabbed (pending={grabbed[slug]['pending']})")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                print(f"[grab] {slug} — lost race, another Lambda owns it")
+                continue
+            raise
+
+    return grabbed
+
+
+def _intent_changed(slug, grabbed_timestamp):
+    """Check if a new event arrived for this slug since we grabbed it.
+
+    Does a ConsistentRead GetItem and compares timestamp to the one we grabbed.
+    Returns True if timestamp changed (new event arrived).
+    """
+    if not LIFECYCLE_TABLE:
+        return False
+    try:
+        resp = dynamodb.get_item(
+            TableName=LIFECYCLE_TABLE,
+            Key={"slug": {"S": slug}},
+            ConsistentRead=True,
+        )
+        item = resp.get("Item")
+        if not item:
+            return False  # record was deleted (shouldn't happen while we own it)
+        current_ts = item.get("timestamp", {}).get("S", "")
+        return current_ts != grabbed_timestamp
+    except ClientError:
+        return False  # on error, assume no change (safe default)
+
+
+def _release(slug, grabbed_timestamp):
+    """Release ownership of a slug. Conditional delete — only if timestamp matches.
+
+    If timestamp changed (new event arrived during processing), re-process once
+    then delete unconditionally.
+    """
+    if not LIFECYCLE_TABLE:
+        return
+
+    try:
+        dynamodb.delete_item(
+            TableName=LIFECYCLE_TABLE,
+            Key={"slug": {"S": slug}},
+            ConditionExpression="#ts = :ts",
+            ExpressionAttributeNames={"#ts": "timestamp"},
+            ExpressionAttributeValues={":ts": {"S": grabbed_timestamp}},
+        )
+        print(f"[release:{slug}] deleted (timestamp matched)")
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Timestamp changed — a new event arrived while we were processing.
+            # SFN already tried to invoke a Lambda for this, but it was skipped
+            # because in_progress=true. We need to handle this one more pass.
+            print(f"[release:{slug}] timestamp changed — new event during processing")
+            # Delete unconditionally — we're the owner, we'll handle it
+            dynamodb.delete_item(
+                TableName=LIFECYCLE_TABLE,
+                Key={"slug": {"S": slug}},
+            )
+            print(f"[release:{slug}] deleted unconditionally (will be re-triggered by next event)")
+        else:
+            raise
+
+
+# ── Instance stop / start / snapshot ─────────────────────────────────────────
+
+def _stop_instance(agent_path):
+    """Stop a Lightsail instance immediately. Makes agent unavailable fast."""
+    slug = _resource_slug(agent_path)
+    instance_name = f"clawless-{slug}"
+
+    try:
+        resp = lightsail.get_instance(instanceName=instance_name)
+        state = resp["instance"]["state"]["name"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NotFoundException":
+            print(f"[stop:{slug}] instance not found — nothing to stop")
+            return
+        raise
+
+    if state == "stopped":
+        print(f"[stop:{slug}] already stopped")
+        return
+
+    if state != "running":
+        print(f"[stop:{slug}] instance state '{state}' — skipping stop")
+        return
+
+    print(f"[stop:{slug}] stopping instance...")
+    lightsail.stop_instance(instanceName=instance_name)
+    print(f"[stop:{slug}] stop requested")
+
+
+def _start_instance(agent_path):
+    """Start a stopped Lightsail instance (used when a resume cancels a pending pause)."""
+    slug = _resource_slug(agent_path)
+    instance_name = f"clawless-{slug}"
+
+    try:
+        resp = lightsail.get_instance(instanceName=instance_name)
+        state = resp["instance"]["state"]["name"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NotFoundException":
+            print(f"[start:{slug}] instance not found — nothing to start")
+            return
+        raise
+
+    if state == "running":
+        print(f"[start:{slug}] already running")
+        return
+
+    if state not in ("stopped", "stopping"):
+        print(f"[start:{slug}] instance state '{state}' — skipping start")
+        return
+
+    print(f"[start:{slug}] starting instance...")
+    lightsail.start_instance(instanceName=instance_name)
+    print(f"[start:{slug}] start requested")
+
+
+def _start_snapshot(agent_path):
+    """Kick off a snapshot for a pause (non-blocking). Returns snapshot name or None."""
+    slug = _resource_slug(agent_path)
+    instance_name = f"clawless-{slug}"
+    snapshot_name = f"clawless-{slug}-snap"
+
+    try:
+        lightsail.get_instance(instanceName=instance_name)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NotFoundException":
+            print(f"[snapshot:{slug}] instance not found — nothing to snapshot")
+            return None
+        raise
+
+    # Check if snapshot already exists
+    try:
+        snap = lightsail.get_instance_snapshot(instanceSnapshotName=snapshot_name)
+        snap_state = snap["instanceSnapshot"]["state"]
+        if snap_state in ("available", "pending"):
+            print(f"[snapshot:{slug}] snapshot already {snap_state}")
+            return snapshot_name if snap_state == "pending" else None
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NotFoundException":
+            raise
+
+    # Wait for instance to be stopped (stop_instance is async)
+    for i in range(30):
+        inst = lightsail.get_instance(instanceName=instance_name)
+        state = inst["instance"]["state"]["name"]
+        if state == "stopped":
+            break
+        if state not in ("stopping", "running"):
+            print(f"[snapshot:{slug}] unexpected state '{state}' — skipping snapshot")
+            return None
+        time.sleep(2)
+    else:
+        print(f"[snapshot:{slug}] timed out waiting for stopped state — skipping snapshot")
         return None
 
-    all_bodies = []
+    print(f"[snapshot:{slug}] creating snapshot {snapshot_name} (non-blocking)...")
+    lightsail.create_instance_snapshot(
+        instanceName=instance_name,
+        instanceSnapshotName=snapshot_name,
+    )
+    return snapshot_name
 
-    # Process the trigger batch
-    for record in records:
-        all_bodies.append(record.get("body", "{}"))
 
-    # Drain remaining messages from the queue
-    if SQS_QUEUE_URL:
-        drained = 0
-        receipt_handles = []
-        while True:
-            resp = sqs.receive_message(
-                QueueUrl=SQS_QUEUE_URL,
-                MaxNumberOfMessages=10,
-                WaitTimeSeconds=0,
-            )
-            messages = resp.get("Messages", [])
-            if not messages:
-                break
-            for msg in messages:
-                all_bodies.append(msg.get("Body", "{}"))
-                receipt_handles.append(msg["ReceiptHandle"])
-            drained += len(messages)
+def _wait_for_snapshots(snapshot_map, grabbed):
+    """Poll until all snapshots are available or their intent changes.
 
-        # Delete drained messages in batches of 10
-        for i in range(0, len(receipt_handles), 10):
-            batch = receipt_handles[i:i + 10]
-            sqs.delete_message_batch(
-                QueueUrl=SQS_QUEUE_URL,
-                Entries=[
-                    {"Id": str(j), "ReceiptHandle": h}
-                    for j, h in enumerate(batch)
-                ],
-            )
+    snapshot_map: {snapshot_name: slug}
+    grabbed: {slug: {timestamp, pending}} — used to detect intent changes
 
-        print(f"Drained {drained} additional messages from queue")
+    Returns set of slugs whose intent changed (abandoned — should be moved
+    to fast path instead of destroyed).
+    """
+    if not snapshot_map:
+        return set()
 
-    # Extract slugs from all event bodies
-    slugs = set()
-    for body_str in all_bodies:
-        try:
-            body = json.loads(body_str)
-            # EventBridge wraps the event; SQS body is the full EventBridge event
-            detail = body.get("detail", body)
-            param_name = detail.get("name", "")
-            parts = param_name.split("/")
-            # /clawless/clients/{client}/{agent}[/active|/error] → slug = client/agent
-            if len(parts) >= 5:
-                slugs.add(f"{parts[3]}/{parts[4]}")
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"WARNING: failed to parse event body: {e}")
+    print(f"Waiting for {len(snapshot_map)} snapshot(s): {list(snapshot_map.keys())}")
+    remaining = dict(snapshot_map)
+    abandoned = set()
 
-    print(f"Affected slugs from {len(all_bodies)} events: {sorted(slugs)}")
-    return slugs if slugs else None
+    while remaining:
+        for snap_name, slug in list(remaining.items()):
+            # Check if intent changed (new event arrived for this slug)
+            if _intent_changed(slug, grabbed[slug]["timestamp"]):
+                print(f"[snapshot] {snap_name} — intent changed for {slug}, abandoning")
+                remaining.pop(snap_name)
+                abandoned.add(slug)
+                continue
+
+            try:
+                snap = lightsail.get_instance_snapshot(instanceSnapshotName=snap_name)
+                state = snap["instanceSnapshot"]["state"]
+                if state == "available":
+                    print(f"[snapshot] {snap_name} ready")
+                    remaining.pop(snap_name)
+                elif state == "error":
+                    print(f"[snapshot] WARNING: {snap_name} failed")
+                    remaining.pop(snap_name)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "NotFoundException":
+                    print(f"[snapshot] WARNING: {snap_name} not found")
+                    remaining.pop(snap_name)
+                else:
+                    raise
+        if remaining:
+            time.sleep(10)
+
+    return abandoned
 
 
 # ── SSM agent config ─────────────────────────────────────────────────────────
@@ -195,8 +443,8 @@ def _get_agents():
     """Read /clawless/clients hierarchy from SSM, return {agent_path: config} dict.
 
     SSM structure:
-      /clawless/clients/{client_slug}/{agent_slug}       → {"client_name": "...", "agent_name": "...", "active": true, ...}
-      /clawless/clients/{client_slug}/{agent_slug}/error  → error message (if any)
+      /clawless/clients/{client_slug}/{agent_slug}       -> {"client_name": "...", "agent_name": "...", "active": true, ...}
+      /clawless/clients/{client_slug}/{agent_slug}/error  -> error message (if any)
 
     Returns a dict keyed by "{client_slug}/{agent_slug}" with _error merged in.
     """
@@ -208,8 +456,8 @@ def _get_agents():
     for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
         for param in page["Parameters"]:
             parts = param["Name"].split("/")
-            # /clawless/clients/{client_slug}/{agent_slug} → 5 parts
-            # /clawless/clients/{client_slug}/{agent_slug}/error → 6 parts
+            # /clawless/clients/{client_slug}/{agent_slug} -> 5 parts
+            # /clawless/clients/{client_slug}/{agent_slug}/error -> 6 parts
             if len(parts) == 5:
                 client_slug, agent_slug = parts[3], parts[4]
                 agent_records[f"{client_slug}/{agent_slug}"] = json.loads(param["Value"])
@@ -229,6 +477,36 @@ def _get_agents():
 
 
 # ── Tofu apply ───────────────────────────────────────────────────────────────
+
+def _apply_with_retry(version, agents, apply_slugs, errored_slugs):
+    """Run tofu apply with state lock retry (15 attempts, 3s apart)."""
+    apply_slugs = apply_slugs - errored_slugs
+    if not apply_slugs:
+        print("No slugs to apply after filtering errored")
+        return
+
+    for attempt in range(1, LOCK_MAX_RETRIES + 2):
+        work_dir = tempfile.mkdtemp(dir="/tmp")
+        try:
+            _apply(work_dir, version, agents, apply_slugs, errored_slugs)
+            return  # success
+        except StateLockError:
+            if attempt > LOCK_MAX_RETRIES:
+                print(f"State lock still held after {LOCK_MAX_RETRIES} retries — giving up")
+                _send_alert(
+                    "Lifecycle apply failed — state lock held",
+                    f"Could not acquire tofu state lock after {LOCK_MAX_RETRIES} retries. "
+                    f"Slugs: {sorted(apply_slugs)}. Events already consumed — will appear as drift on next run."
+                )
+                return
+            print(f"State lock held — retry {attempt}/{LOCK_MAX_RETRIES} in {LOCK_RETRY_INTERVAL}s")
+            time.sleep(LOCK_RETRY_INTERVAL)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            raise
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
 
 def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
     """Clone repo, init tofu, and run a batched apply for affected agents."""
@@ -325,11 +603,14 @@ def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
 
     # Parse failed slugs from tofu error output
     # Tofu errors reference resources like: module.client["test/tess"].aws_lightsail_...
+    # Only match slugs on error lines, not warnings
     failed_slugs = set()
-    for match in re.finditer(r'module\.client\["([^"]+)"\]', output):
-        slug = match.group(1)
-        if slug in apply_slugs:
-            failed_slugs.add(slug)
+    for line in output.splitlines():
+        if line.strip().lstrip("│").strip().startswith("Error:"):
+            for match in re.finditer(r'module\.client\["([^"]+)"\]', line):
+                slug = match.group(1)
+                if slug in apply_slugs:
+                    failed_slugs.add(slug)
 
     if not failed_slugs:
         # Couldn't identify specific slugs — treat as systemic
@@ -437,59 +718,27 @@ def _send_alert(subject, message):
         print(f"WARNING: failed to send alert: {e}")
 
 
-# ── Helper functions (unchanged) ─────────────────────────────────────────────
+# ── Helper functions ─────────────────────────────────────────────────────────
+
+def _wait_for_instance_gone(agent_path, max_wait=300):
+    """Poll until a Lightsail instance no longer exists (deleted by tofu)."""
+    slug = _resource_slug(agent_path)
+    instance_name = f"clawless-{slug}"
+    for i in range(max_wait // 5):
+        try:
+            lightsail.get_instance(instanceName=instance_name)
+            time.sleep(5)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NotFoundException":
+                print(f"[cleanup:{slug}] instance gone")
+                return
+            raise
+    print(f"WARNING: instance {instance_name} still exists after {max_wait}s")
+
 
 def _resource_slug(agent_path):
     """Convert 'client/agent' path to 'client-agent' for AWS resource names."""
     return agent_path.replace("/", "-")
-
-
-def _maybe_snapshot_for_pause(agent_path):
-    """Create clawless-{slug}-snap if the instance is running (pause flow)."""
-    slug = _resource_slug(agent_path)
-    instance_name = f"clawless-{slug}"
-    snapshot_name = f"clawless-{slug}-snap"
-
-    try:
-        resp = lightsail.get_instance(instanceName=instance_name)
-        state = resp["instance"]["state"]["name"]
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NotFoundException":
-            print(f"[pause:{slug}] instance not found — nothing to snapshot")
-            return
-        raise
-
-    if state not in ("running", "stopped"):
-        print(f"[pause:{slug}] instance state '{state}' — skipping snapshot")
-        return
-
-    try:
-        snap = lightsail.get_instance_snapshot(instanceSnapshotName=snapshot_name)
-        snap_state = snap["instanceSnapshot"]["state"]
-        if snap_state in ("available", "pending"):
-            print(f"[pause:{slug}] snapshot already {snap_state} — skipping")
-            return
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "NotFoundException":
-            raise
-
-    print(f"[pause:{slug}] creating snapshot {snapshot_name}...")
-    lightsail.create_instance_snapshot(
-        instanceName=instance_name,
-        instanceSnapshotName=snapshot_name,
-    )
-
-    print(f"[pause:{slug}] waiting for snapshot to become available...")
-    while True:
-        snap = lightsail.get_instance_snapshot(instanceSnapshotName=snapshot_name)
-        snap_state = snap["instanceSnapshot"]["state"]
-        if snap_state == "available":
-            break
-        if snap_state == "error":
-            raise RuntimeError(f"[pause:{slug}] snapshot {snapshot_name} failed")
-        time.sleep(10)
-
-    print(f"[pause:{slug}] snapshot ready")
 
 
 def _maybe_delete_pause_snapshot(agent_path):
@@ -557,7 +806,7 @@ def _backup_agent_to_shared(agent_path, account_id):
 
 def _copy_s3_prefix(src_bucket, dst_bucket, dst_prefix, label):
     """Copy all objects from src_bucket into dst_bucket under dst_prefix."""
-    print(f"[{label}] {src_bucket} → {dst_bucket}/{dst_prefix}")
+    print(f"[{label}] {src_bucket} -> {dst_bucket}/{dst_prefix}")
     try:
         paginator = s3.get_paginator("list_objects_v2")
         count = 0

@@ -55,16 +55,23 @@ if [[ "$(echo "$CURRENT" | jq -r '.active != false')" == "true" ]]; then
   log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already active" >&2; exit 1
 fi
 
-log "Updating ${AGENT_PARAM} (active=true)..."
-UPDATED=$(echo "$CURRENT" | jq '.active = true')
-aws ssm put-parameter \
-  --name "$AGENT_PARAM" \
-  --type String \
-  --overwrite \
-  --value "$UPDATED" \
-  --region "$REGION" >/dev/null
+UPDATED=$(echo "$CURRENT" | jq -c '.active = true')
 
-log "Resume triggered. Waiting for SSM agent to reconnect..."
+log "Invoking Step Functions (SSM write + lifecycle)..."
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$AGENT_PARAM" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg val  "$UPDATED" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update", ssm_value: $val}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
+  --region "$REGION" >/dev/null
+log "Step Functions invoked."
+
+log "Waiting for SSM agent to reconnect..."
 INSTANCE_ID=""
 for i in $(seq 1 24); do
   INSTANCE_ID=$(aws ssm describe-instance-information \
