@@ -85,16 +85,59 @@ if ! aws lightsail get-key-pair --key-pair-name "$KEYPAIR_NAME" --region "$REGIO
     --region "$REGION" >/dev/null
 fi
 
+# ── Read previous golden snapshot (if any) ────────────────────────────────────
+
+PREV_SNAPSHOT=""
+if [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
+  PREV_SNAPSHOT=$(grep '^golden_snapshot_name' "$TOFU_DIR/terraform.tfvars" 2>/dev/null \
+    | awk -F'"' '{print $2}' || true)
+fi
+
+# Verify the snapshot actually exists and is available
+if [[ -n "$PREV_SNAPSHOT" ]]; then
+  SNAP_STATE=$(aws lightsail get-instance-snapshot \
+    --instance-snapshot-name "$PREV_SNAPSHOT" \
+    --query 'instanceSnapshot.state' \
+    --output text --region "$REGION" 2>/dev/null || true)
+  if [[ "$SNAP_STATE" != "available" ]]; then
+    log "Previous snapshot '$PREV_SNAPSHOT' not available (state: ${SNAP_STATE:-not found}), falling back to blueprint"
+    PREV_SNAPSHOT=""
+  fi
+fi
+
 # ── Create bake instance ──────────────────────────────────────────────────────
 
-log "Creating bake instance ($BLUEPRINT_ID / $BUNDLE_ID)..."
-aws lightsail create-instances \
-  --instance-names "$INSTANCE_NAME" \
-  --availability-zone "$AZ" \
-  --blueprint-id "$BLUEPRINT_ID" \
-  --bundle-id "$BUNDLE_ID" \
-  --key-pair-name "$KEYPAIR_NAME" \
-  --region "$REGION" >/dev/null
+if [[ -n "$PREV_SNAPSHOT" ]]; then
+  log "Creating bake instance from previous snapshot ($PREV_SNAPSHOT)..."
+  # Inject current SSH key via user-data in case the key rotated since the
+  # previous bake — Lightsail doesn't re-inject keys for snapshot instances.
+  BAKE_USERDATA="$(cat <<UDEOF
+#!/bin/bash
+mkdir -p /home/ubuntu/.ssh
+echo '${PUBLIC_KEY}' > /home/ubuntu/.ssh/authorized_keys
+chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+chmod 700 /home/ubuntu/.ssh
+chmod 600 /home/ubuntu/.ssh/authorized_keys
+UDEOF
+)"
+  aws lightsail create-instances-from-snapshot \
+    --instance-names "$INSTANCE_NAME" \
+    --availability-zone "$AZ" \
+    --instance-snapshot-name "$PREV_SNAPSHOT" \
+    --bundle-id "$BUNDLE_ID" \
+    --key-pair-name "$KEYPAIR_NAME" \
+    --user-data "$BAKE_USERDATA" \
+    --region "$REGION" >/dev/null
+else
+  log "Creating bake instance from blueprint ($BLUEPRINT_ID / $BUNDLE_ID)..."
+  aws lightsail create-instances \
+    --instance-names "$INSTANCE_NAME" \
+    --availability-zone "$AZ" \
+    --blueprint-id "$BLUEPRINT_ID" \
+    --bundle-id "$BUNDLE_ID" \
+    --key-pair-name "$KEYPAIR_NAME" \
+    --region "$REGION" >/dev/null
+fi
 
 cleanup() {
   log "Cleaning up bake resources..."
@@ -130,9 +173,11 @@ until ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
   sleep 5
 done
 
-log "Waiting for cloud-init to complete (blueprint setup)..."
-ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@$INSTANCE_IP" \
-  "sudo cloud-init status --wait" || true
+if [[ -z "$PREV_SNAPSHOT" ]]; then
+  log "Waiting for cloud-init to complete (blueprint setup)..."
+  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@$INSTANCE_IP" \
+    "sudo cloud-init status --wait" || true
+fi
 
 # ── Run base provisioning playbook ───────────────────────────────────────────
 
