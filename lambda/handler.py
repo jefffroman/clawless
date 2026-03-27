@@ -603,11 +603,14 @@ def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
 
     # Parse failed slugs from tofu error output
     # Tofu errors reference resources like: module.client["test/tess"].aws_lightsail_...
+    # Only match slugs on error lines, not warnings
     failed_slugs = set()
-    for match in re.finditer(r'module\.client\["([^"]+)"\]', output):
-        slug = match.group(1)
-        if slug in apply_slugs:
-            failed_slugs.add(slug)
+    for line in output.splitlines():
+        if line.strip().lstrip("│").strip().startswith("Error:"):
+            for match in re.finditer(r'module\.client\["([^"]+)"\]', line):
+                slug = match.group(1)
+                if slug in apply_slugs:
+                    failed_slugs.add(slug)
 
     if not failed_slugs:
         # Couldn't identify specific slugs — treat as systemic
