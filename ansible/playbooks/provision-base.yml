@@ -71,21 +71,71 @@
 
     # Bake current ansible playbooks into the snapshot so instances can self-provision
     # at boot without needing AWS credentials to sync from S3.
-    - name: Ensure /opt/clawless/ansible directory exists
+    - name: Ensure /opt/clawless/ansible directories exist
       ansible.builtin.file:
-        path: /opt/clawless/ansible
+        path: "{{ item }}"
         state: directory
         owner: root
         group: root
         mode: "0755"
+      loop:
+        - /opt/clawless/ansible
+        - /opt/clawless/ansible/playbooks
+        - /opt/clawless/ansible/roles/searxng/tasks
+        - /opt/clawless/ansible/roles/openclaw/tasks
+        - /opt/clawless/ansible/roles/backup/tasks
+        - /opt/clawless/ansible/roles/memory/tasks
 
-    - name: Copy ansible playbooks to /opt/clawless/ansible
+    # Only copy what provision-client.yml needs at boot: the client playbook,
+    # ansible.cfg, and each role's client tasks, defaults, and templates.
+    # Base-only files (provision-base.yml, tasks/base.yml, common/ role,
+    # Dockerfile, SKILL.md, etc.) are not needed on production instances.
+    - name: Copy ansible.cfg
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../"
-        dest: /opt/clawless/ansible/
+        src: "{{ playbook_dir }}/../ansible.cfg"
+        dest: /opt/clawless/ansible/ansible.cfg
         owner: root
         group: root
         mode: preserve
+
+    - name: Copy client playbook
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/provision-client.yml"
+        dest: /opt/clawless/ansible/playbooks/provision-client.yml
+        owner: root
+        group: root
+        mode: preserve
+
+    - name: Copy client role directories
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/{{ item.role }}/{{ item.subdir }}/"
+        dest: "/opt/clawless/ansible/roles/{{ item.role }}/{{ item.subdir }}/"
+        owner: root
+        group: root
+        mode: preserve
+      loop:
+        - { role: searxng,  subdir: defaults }
+        - { role: searxng,  subdir: templates }
+        - { role: openclaw, subdir: defaults }
+        - { role: openclaw, subdir: templates }
+        - { role: backup,   subdir: defaults }
+        - { role: memory,   subdir: defaults }
+        - { role: memory,   subdir: templates }
+      loop_control:
+        label: "{{ item.role }}/{{ item.subdir }}"
+
+    - name: Copy client task files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/{{ item }}/tasks/client.yml"
+        dest: "/opt/clawless/ansible/roles/{{ item }}/tasks/client.yml"
+        owner: root
+        group: root
+        mode: preserve
+      loop:
+        - searxng
+        - openclaw
+        - backup
+        - memory
 
     # Install OpenClaw globally so any user can run it.
     # npm is provided by the nodejs package installed in the common role.
