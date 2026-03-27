@@ -4,7 +4,7 @@
 
 Instance provisioning is split into two phases to minimize boot time for new agents:
 
-1. **Bake (once)**: `bake-snapshot.sh` creates a temporary Lightsail instance from the base Ubuntu 24.04 blueprint, runs `provision-base.yml` to install all slow dependencies, then snapshots it. This golden snapshot is reused for all agents.
+1. **Bake (once)**: `bake-snapshot.sh` creates a temporary Lightsail instance, runs `provision-base.yml` to install all slow dependencies, then snapshots it. If a previous golden snapshot exists, the bake instance starts from it (incremental bake — most tasks skip via idempotency guards). Otherwise it starts from the base Ubuntu 24.04 blueprint. The resulting golden snapshot is reused for all agents.
 
 2. **Provision (per agent)**: When a new agent is created, its Lightsail instance boots from the golden snapshot. The user-data script runs `provision-client.yml` which only does fast, client-specific configuration — writing credentials, seeding workspace files, and starting services.
 
@@ -66,7 +66,7 @@ For client-side Ansible changes without rebaking, use `publish-ansible.sh` to sy
 
 1. Publishes current Ansible playbooks to S3
 2. Generates an SSH key pair at `~/.ssh/clawless_ansible` if absent, uploads to Lightsail
-3. Creates a temporary Lightsail instance from the base blueprint
+3. Creates a temporary Lightsail instance from the previous golden snapshot (if available) or the base blueprint
 4. Opens port 22 to the provisioner's IP only
 5. Runs `provision-base.yml` via SSH
 6. Clears SSM registration (so new instances register with their own activation)
