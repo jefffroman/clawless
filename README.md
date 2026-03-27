@@ -4,6 +4,8 @@
 
 **An on-demand, resumable, serverless OpenClaw platform for AWS.**
 
+> **Alpha** — Clawless is under active development. The core lifecycle (add, pause, resume, remove) is working and tested, but the project is early. Expect rough edges, breaking changes, and missing features. Feedback and contributions are welcome.
+
 <br clear="left">
 
 Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent instances on AWS Lightsail. Each agent gets its own Lightsail instance, IAM role, Bedrock access, and workspace backed up to S3. Instances can be paused (snapshotted) when idle and resumed in minutes — paying only for storage when paused.
@@ -184,4 +186,4 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 
 ## Contributing
 
-Feature requests, bug reports, and patches are welcome. Open an issue or pull request on GitHub.
+Issues and pull requests are welcome on [GitHub](https://github.com/jefffroman/clawless).
