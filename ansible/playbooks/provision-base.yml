@@ -139,11 +139,14 @@
 
     # Install OpenClaw globally so any user can run it.
     # npm is provided by the nodejs package installed in the common role.
-    - name: Install OpenClaw (latest)
+    # Pinned to 2026.3.23: v2026.3.24 has a channel init regression
+    # (openclaw/openclaw#55304). Tracked in #33 — unpin when fixed.
+    - name: Install OpenClaw (pinned — see openclaw/openclaw#55304)
       community.general.npm:
         name: openclaw
+        version: "2026.3.23"
         global: true
-        state: latest
+        state: present
 
     # Install InboxAPI MCP server globally (available to agent tool calls).
     - name: Install InboxAPI MCP server globally
