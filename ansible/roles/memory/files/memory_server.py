@@ -32,8 +32,8 @@ log = logging.getLogger("memory-server")
 # Warm resources (loaded once at startup, reused across requests)
 # ---------------------------------------------------------------------------
 
-model: SentenceTransformer | None = None
-chroma_client: chromadb.PersistentClient | None = None
+model = None
+chroma_client = None
 
 
 def warmup():
