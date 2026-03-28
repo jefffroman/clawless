@@ -94,6 +94,8 @@ def patch_config():
     defaults.pop("mcpServers", None)
     defaults.pop("workspaceDir", None)
     defaults.pop("workspace", None)
+    # plugins.allow is deprecated in newer OpenClaw and can block plugin loading.
+    config.get("plugins", {}).pop("allow", None)
 
     defaults.update(MEMORY_SEARCH_BLOCK)
 
