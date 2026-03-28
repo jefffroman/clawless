@@ -142,6 +142,9 @@ def patch_config():
     if ext_path not in load_paths:
         load_paths.append(ext_path)
     plugins.setdefault("slots", {})["contextEngine"] = "clawless-memory"
+    allow = plugins.setdefault("allow", [])
+    if "clawless-memory" not in allow:
+        allow.append("clawless-memory")
     print("plugins.slots.contextEngine patched to clawless-memory")
 
     with open(CONFIG_PATH, "w") as f:

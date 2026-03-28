@@ -135,3 +135,9 @@
     src: clawless-memory-server.service.j2
     dest: /etc/systemd/system/clawless-memory-server.service
   notify: Reload systemd daemon
+
+- name: Enable memory server (starts on first boot from snapshot)
+  ansible.builtin.systemd:
+    name: clawless-memory-server
+    enabled: true
+    daemon_reload: true
