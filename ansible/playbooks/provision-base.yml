@@ -82,9 +82,13 @@
         - /opt/clawless/ansible
         - /opt/clawless/ansible/playbooks
         - /opt/clawless/ansible/roles/searxng/tasks
+        - /opt/clawless/ansible/roles/searxng/handlers
         - /opt/clawless/ansible/roles/openclaw/tasks
+        - /opt/clawless/ansible/roles/openclaw/handlers
         - /opt/clawless/ansible/roles/backup/tasks
+        - /opt/clawless/ansible/roles/backup/handlers
         - /opt/clawless/ansible/roles/memory/tasks
+        - /opt/clawless/ansible/roles/memory/handlers
 
     # Only copy what provision-client.yml needs at boot: the client playbook,
     # ansible.cfg, and each role's client tasks, defaults, and templates.
@@ -116,11 +120,15 @@
       loop:
         - { role: searxng,  subdir: defaults }
         - { role: searxng,  subdir: templates }
+        - { role: searxng,  subdir: handlers }
         - { role: openclaw, subdir: defaults }
         - { role: openclaw, subdir: templates }
+        - { role: openclaw, subdir: handlers }
         - { role: backup,   subdir: defaults }
+        - { role: backup,   subdir: handlers }
         - { role: memory,   subdir: defaults }
         - { role: memory,   subdir: templates }
+        - { role: memory,   subdir: handlers }
       loop_control:
         label: "{{ item.role }}/{{ item.subdir }}"
 
@@ -184,7 +192,6 @@
           --skip-skills
           --skip-search
           --skip-health
-        creates: "{{ openclaw_state_dir }}/openclaw.json"
       become_user: "{{ openclaw_user }}"
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"

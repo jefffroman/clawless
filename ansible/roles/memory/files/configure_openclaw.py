@@ -134,6 +134,11 @@ def patch_config():
         config["channels"][CHANNEL] = {**existing, **CHANNEL_CONFIG}
         print(f"channels.{CHANNEL} patched")
 
+    # Remove plugins block entirely — even an empty plugins.allow list
+    # silently prevents channel initialization (openclaw/openclaw#55304).
+    # Re-add when context engine plugin is unblocked.
+    config.pop("plugins", None)
+
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     print("openclaw.json patched — restart OpenClaw to apply")
