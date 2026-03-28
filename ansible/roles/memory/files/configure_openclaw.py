@@ -136,6 +136,7 @@ def patch_config():
 
     # Context engine plugin: activate the 3-layer memory retrieval plugin.
     plugins = config.setdefault("plugins", {})
+    plugins.pop("paths", None)  # clean up stale key from earlier version
     load_block = plugins.setdefault("load", {})
     load_paths = load_block.setdefault("paths", [])
     ext_path = "~/.openclaw/extensions"
