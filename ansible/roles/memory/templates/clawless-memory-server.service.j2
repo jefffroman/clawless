@@ -1,0 +1,16 @@
+[Unit]
+Description=Clawless memory retrieval server (aiohttp)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{ openclaw_workspace_dir }}/vector_memory/venv/bin/python \
+          {{ openclaw_workspace_dir }}/vector_memory/memory_server.py
+User={{ openclaw_user }}
+WorkingDirectory={{ openclaw_workspace_dir }}
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

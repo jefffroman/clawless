@@ -134,6 +134,15 @@ def patch_config():
         config["channels"][CHANNEL] = {**existing, **CHANNEL_CONFIG}
         print(f"channels.{CHANNEL} patched")
 
+    # Context engine plugin: activate the 3-layer memory retrieval plugin.
+    plugins = config.setdefault("plugins", {})
+    load_paths = plugins.setdefault("paths", [])
+    ext_path = "~/.openclaw/extensions"
+    if ext_path not in load_paths:
+        load_paths.append(ext_path)
+    plugins.setdefault("slots", {})["contextEngine"] = "clawless-memory"
+    print("plugins.slots.contextEngine patched to clawless-memory")
+
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     print("openclaw.json patched — restart OpenClaw to apply")

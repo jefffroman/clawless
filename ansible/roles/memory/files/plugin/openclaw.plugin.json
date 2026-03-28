@@ -1,0 +1,16 @@
+{
+  "id": "clawless-memory",
+  "kind": "context-engine",
+  "displayName": "Clawless 3-Layer Memory",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "serverUrl": { "type": "string", "default": "http://127.0.0.1:3271" },
+      "topN": { "type": "number", "default": 5 },
+      "compact": { "type": "boolean", "default": true },
+      "timeoutMs": { "type": "number", "default": 2000 }
+    },
+    "additionalProperties": false
+  }
+}

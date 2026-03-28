@@ -1,4 +1,4 @@
-import os, re, json, hashlib, chromadb, networkx as nx
+import os, re, json, hashlib, tempfile, chromadb, networkx as nx
 from sentence_transformers import SentenceTransformer
 from datetime import datetime, timezone
 
@@ -47,6 +47,18 @@ def md5(path):
     return hashlib.md5(open(path, "rb").read()).hexdigest()
 
 
+def atomic_json_write(path, data):
+    """Write JSON via temp file + rename to avoid partial reads."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.rename(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
 def index_memory():
     print("Indexing MEMORY.md...")
     model   = SentenceTransformer(MODEL_NAME)
@@ -66,12 +78,10 @@ def index_memory():
 
     corpus = [{"id": ids[i], "text": documents[i], "section": metadatas[i]["section"]}
               for i in range(len(chunks))]
-    with open(BM25_CORPUS, "w") as f:
-        json.dump(corpus, f, indent=2)
+    atomic_json_write(BM25_CORPUS, corpus)
 
     G = build_graph(chunks)
-    with open(GRAPH_FILE, "w") as f:
-        json.dump(nx.node_link_data(G), f, indent=2)
+    atomic_json_write(GRAPH_FILE, nx.node_link_data(G))
 
     os.makedirs(os.path.dirname(HEARTBEAT), exist_ok=True)
     state = {
@@ -84,8 +94,7 @@ def index_memory():
             "status": "synced"
         }
     }
-    with open(HEARTBEAT, "w") as f:
-        json.dump(state, f, indent=2)
+    atomic_json_write(HEARTBEAT, state)
 
     print(f"Done: {len(chunks)} chunks · {G.number_of_nodes()} graph nodes · BM25 corpus saved")
 

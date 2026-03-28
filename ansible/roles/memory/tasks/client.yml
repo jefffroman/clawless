@@ -76,3 +76,19 @@
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Enable and start memory retrieval server
+  ansible.builtin.systemd:
+    name: clawless-memory-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for memory server health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3271/health
+    return_content: true
+  register: memory_health
+  until: memory_health.status == 200
+  retries: 12
+  delay: 5

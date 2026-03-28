@@ -36,6 +36,7 @@
       - sentence-transformers
       - networkx
       - rank-bm25
+      - aiohttp
     virtualenv: "{{ openclaw_workspace_dir }}/vector_memory/venv"
     state: present
   become_user: "{{ openclaw_user }}"
@@ -52,6 +53,7 @@
     - search.py
     - auto_retrieve.py
     - configure_openclaw.py
+    - memory_server.py
 
 - name: Deploy auto-reindex script
   ansible.builtin.copy:
@@ -104,4 +106,32 @@
 
       [Install]
       WantedBy=timers.target
+  notify: Reload systemd daemon
+
+# --- Context engine plugin (3-layer memory retrieval) ---
+
+- name: Create extensions directory for context engine plugin
+  ansible.builtin.file:
+    path: "{{ openclaw_state_dir }}/extensions/clawless-memory"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0750"
+
+- name: Deploy context engine plugin files
+  ansible.builtin.copy:
+    src: "plugin/{{ item }}"
+    dest: "{{ openclaw_state_dir }}/extensions/clawless-memory/{{ item }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0640"
+  loop:
+    - openclaw.plugin.json
+    - index.js
+    - package.json
+
+- name: Deploy memory server systemd service
+  ansible.builtin.template:
+    src: clawless-memory-server.service.j2
+    dest: /etc/systemd/system/clawless-memory-server.service
   notify: Reload systemd daemon
