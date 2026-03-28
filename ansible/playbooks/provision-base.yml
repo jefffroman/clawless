@@ -187,7 +187,6 @@
           --skip-skills
           --skip-search
           --skip-health
-        creates: "{{ openclaw_state_dir }}/openclaw.json"
       become_user: "{{ openclaw_user }}"
       environment:
         XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid }}"
