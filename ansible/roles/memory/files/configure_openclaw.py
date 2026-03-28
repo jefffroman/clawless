@@ -134,6 +134,11 @@ def patch_config():
         config["channels"][CHANNEL] = {**existing, **CHANNEL_CONFIG}
         print(f"channels.{CHANNEL} patched")
 
+    # Trust our context engine plugin.
+    allow = config.setdefault("plugins", {}).setdefault("allow", [])
+    if "clawless-memory" not in allow:
+        allow.append("clawless-memory")
+
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     print("openclaw.json patched — restart OpenClaw to apply")
