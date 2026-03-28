@@ -5,7 +5,7 @@
 # The golden snapshot has system packages updated and memory Python packages
 # pre-installed. provision-client.yml then runs only the fast config steps.
 #
-# Usage: ./scripts/bake-snapshot.sh [--region <region>]
+# Usage: ./scripts/bake-snapshot.sh [--region <region>] [--clean]
 #
 # Requires: aws CLI, ansible, jq
 
@@ -21,9 +21,11 @@ log() { echo "[bake] $*"; }
 # ── Parse args ────────────────────────────────────────────────────────────────
 
 REGION=""
+CLEAN_BAKE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --region) REGION="$2"; shift 2 ;;
+    --clean) CLEAN_BAKE=true; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -88,7 +90,9 @@ fi
 # ── Read previous golden snapshot (if any) ────────────────────────────────────
 
 PREV_SNAPSHOT=""
-if [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
+if [[ "$CLEAN_BAKE" == true ]]; then
+  log "Clean bake requested — ignoring previous snapshot, building from blueprint"
+elif [[ -f "$TOFU_DIR/terraform.tfvars" ]]; then
   PREV_SNAPSHOT=$(grep '^golden_snapshot_name' "$TOFU_DIR/terraform.tfvars" 2>/dev/null \
     | awk -F'"' '{print $2}' || true)
 fi

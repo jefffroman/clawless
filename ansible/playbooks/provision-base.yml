@@ -82,9 +82,13 @@
         - /opt/clawless/ansible
         - /opt/clawless/ansible/playbooks
         - /opt/clawless/ansible/roles/searxng/tasks
+        - /opt/clawless/ansible/roles/searxng/handlers
         - /opt/clawless/ansible/roles/openclaw/tasks
+        - /opt/clawless/ansible/roles/openclaw/handlers
         - /opt/clawless/ansible/roles/backup/tasks
+        - /opt/clawless/ansible/roles/backup/handlers
         - /opt/clawless/ansible/roles/memory/tasks
+        - /opt/clawless/ansible/roles/memory/handlers
 
     # Only copy what provision-client.yml needs at boot: the client playbook,
     # ansible.cfg, and each role's client tasks, defaults, and templates.
@@ -116,11 +120,15 @@
       loop:
         - { role: searxng,  subdir: defaults }
         - { role: searxng,  subdir: templates }
+        - { role: searxng,  subdir: handlers }
         - { role: openclaw, subdir: defaults }
         - { role: openclaw, subdir: templates }
+        - { role: openclaw, subdir: handlers }
         - { role: backup,   subdir: defaults }
+        - { role: backup,   subdir: handlers }
         - { role: memory,   subdir: defaults }
         - { role: memory,   subdir: templates }
+        - { role: memory,   subdir: handlers }
       loop_control:
         label: "{{ item.role }}/{{ item.subdir }}"
 
@@ -139,14 +147,11 @@
 
     # Install OpenClaw globally so any user can run it.
     # npm is provided by the nodejs package installed in the common role.
-    # Pinned to 2026.3.23: v2026.3.24 has a channel init regression
-    # (openclaw/openclaw#55304). Tracked in #33 — unpin when fixed.
-    - name: Install OpenClaw (pinned — see openclaw/openclaw#55304)
+    - name: Install OpenClaw (latest)
       community.general.npm:
         name: openclaw
-        version: "2026.3.23"
         global: true
-        state: present
+        state: latest
 
     # Install InboxAPI MCP server globally (available to agent tool calls).
     - name: Install InboxAPI MCP server globally

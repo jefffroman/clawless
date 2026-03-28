@@ -81,7 +81,6 @@ case "$CHANNEL" in
     ;;
   *)
     echo "Paste the channel_config JSON for this provider (see docs.openclaw.ai/channels)."
-    echo "Ensure dmPolicy and allowFrom are set to restrict access to the client."
     read -rp "channel_config JSON: " CHANNEL_CONFIG
     if ! echo "$CHANNEL_CONFIG" | jq . >/dev/null 2>&1; then
       echo "Error: invalid JSON" >&2
