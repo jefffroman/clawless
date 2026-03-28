@@ -15,12 +15,11 @@
     update_cache: true
     cache_valid_time: 3600
 
-- name: Full dist-upgrade (addresses outdated kernel in Lightsail blueprint)
+- name: Upgrade userspace packages (skip kernel — managed by Lightsail base image)
   ansible.builtin.apt:
-    upgrade: dist
+    upgrade: safe
     autoremove: true
     autoclean: true
-  register: apt_upgrade_result
 
 - name: Install essential packages
   ansible.builtin.apt:
@@ -51,7 +50,7 @@
     classic: true
     state: present
 
-# SSM Agent: installed here (after dist-upgrade) so it's guaranteed on the
+# SSM Agent: installed here (after apt upgrade) so it's guaranteed on the
 # golden snapshot. Required for SSM hybrid activation, credential delivery,
 # and Session Manager access. Auto-updates via snap.
 - name: Install SSM Agent via snap
@@ -136,8 +135,3 @@
   community.general.timezone:
     name: UTC
 
-- name: Reboot if kernel was upgraded
-  ansible.builtin.reboot:
-    reboot_timeout: 300
-    msg: "Rebooting after kernel upgrade"
-  when: apt_upgrade_result.changed
