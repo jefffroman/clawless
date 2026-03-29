@@ -80,7 +80,7 @@ else
   echo "No queued message — sending default greeting..."
   openclaw agent \
     --to "$PEER_ID" \
-    --message "[SYSTEM DIRECTIVE — not from your user] You have just woken up from sleep. Send a greeting to your user via this channel. Use your memory files to personalize it." \
+    --message "Hello {{ agent_name }}" \
     --deliver \
     --channel "$CHANNEL"
 fi
