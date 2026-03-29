@@ -127,6 +127,9 @@ def patch_config():
     skills["searxng"] = {"enabled": True, "env": {"SEARXNG_URL": searxng_url}}
     print(f"skills.entries.searxng patched: SEARXNG_URL={searxng_url}")
 
+    skills["sleep"] = {"enabled": True}
+    print("skills.entries.sleep patched: enabled")
+
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields
         # (e.g. allowFrom entries added via pairing) survive re-runs.

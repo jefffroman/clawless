@@ -122,20 +122,19 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
       {
         Sid    = "Monitoring"
         Effect = "Allow"
-        Action = ["cloudwatch:*", "logs:CreateLogGroup",
-          "logs:CreateLogStream", "logs:PutLogEvents",
-        "sns:*", "budgets:*"]
+        Action = ["cloudwatch:*", "logs:*", "sns:*", "budgets:*"]
         Resource = "*"
       },
       {
         # ECR, Step Functions, and Lambda — needed to refresh own resources during tofu apply
         Sid      = "SelfManaged"
         Effect   = "Allow"
-        Action   = ["ecr:*", "events:*", "lambda:*"]
+        Action   = ["ecr:*", "events:*", "lambda:*", "states:*"]
         Resource = "*"
       },
       {
-        Sid    = "DynamoDB"
+        # Item operations on lifecycle coordination table
+        Sid    = "DynamoDBItems"
         Effect = "Allow"
         Action = [
           "dynamodb:Scan",
@@ -143,9 +142,28 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
           "dynamodb:DeleteItem",
           "dynamodb:GetItem",
         ]
+        Resource = [aws_dynamodb_table.lifecycle_pending.arn]
+      },
+      {
+        # Read-only table metadata — tofu refresh during targeted apply
+        Sid    = "DynamoDBDescribe"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeTable",
+          "dynamodb:DescribeContinuousBackups",
+          "dynamodb:DescribeTimeToLive",
+          "dynamodb:ListTagsOfResource",
+        ]
         Resource = [
           aws_dynamodb_table.lifecycle_pending.arn,
+          aws_dynamodb_table.wake_messages.arn,
         ]
+      },
+      {
+        Sid      = "Bedrock"
+        Effect   = "Allow"
+        Action   = ["bedrock:GetInferenceProfile"]
+        Resource = "*"
       },
     ]
   })
@@ -203,6 +221,33 @@ resource "aws_lambda_function" "lifecycle" {
 
 resource "aws_dynamodb_table" "lifecycle_pending" {
   name         = "clawless-lifecycle-pending"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "slug"
+
+  attribute {
+    name = "slug"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
+# ── Wake Messages Table ──────────────────────────────────────────────────────
+# Stores pending wake messages keyed by agent slug. On resume, the wake-greet
+# script reads and deletes its own entry. The write side (wake-listener Lambda)
+# comes in a future phase; for now the table enables the read path so the
+# wake-greet script is built once with the full DynamoDB check.
+#
+# Single item per slug. Schemaless attributes: message, channel, sender, timestamp.
+# TTL auto-cleans stale messages (7-day default set by the writer).
+
+resource "aws_dynamodb_table" "wake_messages" {
+  name         = "clawless-wake-messages"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "slug"
 
@@ -318,11 +363,20 @@ resource "aws_sfn_state_machine" "lifecycle" {
       }
       ChooseSSMAction = {
         Type = "Choice"
-        Choices = [{
-          Variable     = "$.operation"
-          StringEquals = "Delete"
-          Next         = "DeleteSSM"
-        }]
+        Choices = [
+          {
+            Variable     = "$.operation"
+            StringEquals = "Delete"
+            Next         = "DeleteSSM"
+          },
+          {
+            # Update: SSM already written by the caller (e.g. clawless-sleep).
+            # Skip WriteSSM and go straight to pending + Lambda invocation.
+            Variable     = "$.operation"
+            StringEquals = "Update"
+            Next         = "WritePending"
+          }
+        ]
         Default = "WriteSSM"
       }
       WriteSSM = {

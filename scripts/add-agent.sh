@@ -98,7 +98,6 @@ AGENT_VALUE="$(jq -cn \
   '{
     client_name:    $client_name,
     agent_name:     $agent_name,
-    active:         true,
     agent_channel:  $agent_channel,
     channel_config: $channel_config
   }')"
@@ -118,6 +117,15 @@ aws stepfunctions start-execution \
   --input "$SFN_INPUT" \
   --region "$REGION" >/dev/null
 echo "Step Functions invoked."
+
+# Active flag lives in its own parameter so agents can self-pause via a
+# tightly scoped IAM policy (ssm:PutParameter on this path only).
+aws ssm put-parameter \
+  --name "/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}/active" \
+  --type "String" \
+  --value "true" \
+  --overwrite \
+  --region "${REGION}"
 
 hr
 echo "Agent '${AGENT_NAME}' registered at ${AGENT_PARAM}."

@@ -443,33 +443,41 @@ def _get_agents():
     """Read /clawless/clients hierarchy from SSM, return {agent_path: config} dict.
 
     SSM structure:
-      /clawless/clients/{client_slug}/{agent_slug}       -> {"client_name": "...", "agent_name": "...", "active": true, ...}
-      /clawless/clients/{client_slug}/{agent_slug}/error  -> error message (if any)
+      /clawless/clients/{client_slug}/{agent_slug}          -> {"client_name": "...", "agent_name": "...", ...}
+      /clawless/clients/{client_slug}/{agent_slug}/active   -> "true" or "false"
+      /clawless/clients/{client_slug}/{agent_slug}/error    -> error message (if any)
 
-    Returns a dict keyed by "{client_slug}/{agent_slug}" with _error merged in.
+    The /active parameter is split out so agents can pause themselves via a
+    tightly scoped IAM policy (ssm:PutParameter on their own /active path only).
+
+    Returns a dict keyed by "{client_slug}/{agent_slug}" with active and _error merged in.
     """
     paginator = ssm.get_paginator("get_parameters_by_path")
 
-    agent_records = {}   # {agent_path: {client_name, agent_name, active, ...}}
+    agent_records = {}   # {agent_path: {client_name, agent_name, ...}}
+    active_flags = {}    # {agent_path: bool}
     error_flags = {}     # {agent_path: str}
 
     for page in paginator.paginate(Path="/clawless/clients", Recursive=True, WithDecryption=True):
         for param in page["Parameters"]:
             parts = param["Name"].split("/")
-            # /clawless/clients/{client_slug}/{agent_slug} -> 5 parts
-            # /clawless/clients/{client_slug}/{agent_slug}/error -> 6 parts
+            agent_key = f"{parts[3]}/{parts[4]}"
+            # /clawless/clients/{client_slug}/{agent_slug}          -> 5 parts
+            # /clawless/clients/{client_slug}/{agent_slug}/active   -> 6 parts
+            # /clawless/clients/{client_slug}/{agent_slug}/error    -> 6 parts
             if len(parts) == 5:
-                client_slug, agent_slug = parts[3], parts[4]
-                agent_records[f"{client_slug}/{agent_slug}"] = json.loads(param["Value"])
+                agent_records[agent_key] = json.loads(param["Value"])
+            elif len(parts) == 6 and parts[5] == "active":
+                active_flags[agent_key] = param["Value"] == "true"
             elif len(parts) == 6 and parts[5] == "error":
-                client_slug, agent_slug = parts[3], parts[4]
-                error_flags[f"{client_slug}/{agent_slug}"] = param["Value"]
+                error_flags[agent_key] = param["Value"]
 
-    # Merge error flags into agent records
+    # Override active from the separate /active parameter, merge _error
     agents = {}
     for agent_path, cfg in agent_records.items():
         agents[agent_path] = {
             **cfg,
+            "active": active_flags.get(agent_path, cfg.get("active", True)),
             "_error": error_flags.get(agent_path),
         }
 

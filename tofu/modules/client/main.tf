@@ -18,6 +18,9 @@ locals {
   snapshot_name = var.is_new ? var.golden_snapshot_name : "clawless-${local.resource_slug}-snap"
   use_snapshot  = local.snapshot_name != ""
 
+  # "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0" → "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  bedrock_profile_id = trimprefix(var.bedrock_model, "bedrock/")
+
   tags = merge(var.tags, {
     Agent = var.agent_slug
     Active = tostring(var.active)
@@ -26,6 +29,10 @@ locals {
 
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
+
+data "aws_bedrock_inference_profile" "model" {
+  inference_profile_id = local.bedrock_profile_id
+}
 
 # ── IAM Role (SSM trust) ──────────────────────────────────────────────────────
 # Lightsail has no native instance profile support, so we use SSM Hybrid
@@ -66,14 +73,17 @@ data "aws_iam_policy_document" "bedrock" {
     sid       = "BedrockInvokeModel"
     effect    = "Allow"
     actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-    resources = ["*"]
+    resources = concat(
+      [data.aws_bedrock_inference_profile.model.inference_profile_arn],
+      [for m in data.aws_bedrock_inference_profile.model.models : m.model_arn]
+    )
   }
 
   # Required for cross-region inference profiles (us.anthropic.*, us.amazon.*)
   statement {
     sid       = "MarketplaceSubscriptionView"
     effect    = "Allow"
-    actions   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"]
+    actions   = ["aws-marketplace:ViewSubscriptions"]
     resources = ["*"]
   }
 }
@@ -184,6 +194,67 @@ resource "aws_iam_role_policy" "cloudwatch_backup" {
   policy = data.aws_iam_policy_document.cloudwatch_backup.json
 }
 
+# ── Self-sleep ────────────────────────────────────────────────────────────────
+# Agent can set its own /active parameter to "false" to trigger a sleep.
+# Scoped to exactly one parameter — no wildcards, no delete.
+
+data "aws_iam_policy_document" "self_sleep" {
+  statement {
+    sid       = "SelfSleep"
+    effect    = "Allow"
+    actions   = ["ssm:PutParameter"]
+    resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/clawless/clients/${var.agent_slug}/active"]
+  }
+}
+
+resource "aws_iam_role_policy" "self_sleep" {
+  name   = "self-sleep"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.self_sleep.json
+}
+
+# ── Lifecycle SFN invocation ──────────────────────────────────────────────────
+# Agent can invoke the lifecycle Step Functions workflow to trigger its own
+# sleep cycle. Scoped to exactly the lifecycle SFN — no other state machines.
+
+data "aws_iam_policy_document" "sfn_invoke" {
+  statement {
+    sid       = "LifecycleSFNInvoke"
+    effect    = "Allow"
+    actions   = ["states:StartExecution"]
+    resources = [var.lifecycle_sfn_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "sfn_invoke" {
+  name   = "lifecycle-sfn-invoke"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.sfn_invoke.json
+}
+
+# ── Wake Messages ─────────────────────────────────────────────────────────────
+# Agent reads and deletes its own wake message on boot. Security is enforced
+# at the OS layer (hardcoded slug in wake-greet script, no agent/client access
+# to the script or raw AWS APIs), not via IAM conditions (LeadingKeys doesn't
+# work with GetItem/DeleteItem).
+
+data "aws_iam_policy_document" "wake_messages" {
+  statement {
+    sid    = "WakeMessagesReadDelete"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [var.wake_messages_table_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "wake_messages" {
+  name   = "wake-messages"
+  role   = aws_iam_role.ssm.id
+  policy = data.aws_iam_policy_document.wake_messages.json
+}
 
 # ── SSM Activation ────────────────────────────────────────────────────────────
 
@@ -283,7 +354,9 @@ ${base64encode(jsonencode({
   agent_style             = var.agent_style
   agent_channel           = var.agent_channel
   channel_config          = var.channel_config
-  iam_role_arn            = aws_iam_role.ssm.arn
+  iam_role_arn             = aws_iam_role.ssm.arn
+  lifecycle_sfn_arn        = var.lifecycle_sfn_arn
+  wake_messages_table_name = var.wake_messages_table_name
 }))}
 CLIENTVARS
   cd /opt/clawless/ansible

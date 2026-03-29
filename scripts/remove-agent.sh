@@ -44,9 +44,13 @@ log "Removing agent: ${CLIENT_SLUG}-${AGENT_SLUG}"
 log "  Region: $REGION"
 hr
 
-# Verify agent exists
+# Check if agent SSM record exists
+SSM_MISSING=false
 if ! aws ssm get-parameter --name "$AGENT_PARAM" --region "$REGION" >/dev/null 2>&1; then
-  log "ERROR: agent '${CLIENT_SLUG}-${AGENT_SLUG}' not found in SSM" >&2; exit 1
+  log "WARNING: SSM parameter '${AGENT_PARAM}' not found — already deleted?"
+  log "  The Lightsail instance and other AWS resources may still exist."
+  log "  Proceeding with lifecycle invocation to ensure full cleanup."
+  SSM_MISSING=true
 fi
 
 if [[ "$FORCE" == false ]]; then
@@ -57,7 +61,15 @@ if [[ "$FORCE" == false ]]; then
   fi
 fi
 
-log "Invoking Step Functions (SSM delete + lifecycle)..."
+# Delete agent record, active flag, and any error state
+if [[ "$SSM_MISSING" == false ]]; then
+  log "Deleting ${AGENT_PARAM}..."
+  aws ssm delete-parameter --name "$AGENT_PARAM" --region "$REGION"
+fi
+aws ssm delete-parameter --name "${AGENT_PARAM}/active" --region "$REGION" 2>/dev/null || true
+aws ssm delete-parameter --name "${AGENT_PARAM}/error" --region "$REGION" 2>/dev/null || true
+
+log "Invoking Step Functions (lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
   --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
 SFN_INPUT=$(jq -cn \

@@ -17,5 +17,8 @@ module "client" {
   golden_snapshot_name = var.golden_snapshot_name
   backup_bucket        = aws_s3_bucket.backups.id
   ansible_s3_bucket    = var.ansible_s3_bucket
-  tags                 = var.tags
+  lifecycle_sfn_arn        = aws_sfn_state_machine.lifecycle.arn
+  wake_messages_table_arn  = aws_dynamodb_table.wake_messages.arn
+  wake_messages_table_name = aws_dynamodb_table.wake_messages.name
+  tags                     = var.tags
 }
