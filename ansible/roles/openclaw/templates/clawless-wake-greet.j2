@@ -66,11 +66,23 @@ WAKE_ITEM=$(aws dynamodb get-item \
   --region "$REGION" \
   --output json 2>/dev/null || echo '{}')
 
-WAKE_MSG=$(echo "$WAKE_ITEM" | jq -r '.Item.message.S // empty')
+# Extract messages — supports both list format (from wake listener) and
+# legacy single-message format (from manual DynamoDB writes).
+WAKE_MSG=""
+if echo "$WAKE_ITEM" | jq -e '.Item.messages.L' >/dev/null 2>&1; then
+  # List format: concatenate chronologically (oldest first)
+  WAKE_MSG=$(echo "$WAKE_ITEM" | jq -r '
+    [.Item.messages.L[].M | (.sender_name.S // "User") + ": " + (.text.S // "")]
+    | join("\n")
+  ')
+else
+  # Legacy single-message format
+  WAKE_MSG=$(echo "$WAKE_ITEM" | jq -r '.Item.message.S // empty')
+fi
 
 if [ -n "$WAKE_MSG" ]; then
-  echo "Found queued wake message — replaying..."
-  # Delete the message first (idempotent, avoids replay on restart)
+  echo "Found queued wake message(s) — replaying..."
+  # Delete the item first (idempotent, avoids replay on restart)
   aws dynamodb delete-item \
     --table-name "$TABLE" \
     --key "{\"slug\": {\"S\": \"${SLUG}\"}}" \
