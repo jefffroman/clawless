@@ -58,14 +58,13 @@ You do **not** need to rebake for:
 - Template changes (MEMORY.md.j2, etc.)
 - Lambda or tofu changes
 
-For client-side Ansible changes without rebaking, use `publish-ansible.sh` to sync to S3, then `reprovision` on the instance (or let the next new agent pick them up automatically).
+For client-side Ansible changes without rebaking, run `reprovision` on the instance — it clones the repo at the `/clawless/version` ref and re-runs `provision-client.yml`. New agents pick up changes automatically (user-data clones from git at boot).
 
 ## Bake process
 
 `bake-snapshot.sh` does the following:
 
-1. Publishes current Ansible playbooks to S3
-2. Generates an SSH key pair at `~/.ssh/clawless_ansible` if absent, uploads to Lightsail
+1. Generates an SSH key pair at `~/.ssh/clawless_ansible` if absent, uploads to Lightsail
 3. Creates a temporary Lightsail instance from the previous golden snapshot (if available) or the base blueprint
 4. Opens port 22 to the provisioner's IP only
 5. Runs `provision-base.yml` via SSH

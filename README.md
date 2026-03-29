@@ -145,7 +145,7 @@ Verify the agent is provisioned and running:
 ./scripts/ssm-run.sh --slug <client>-<agent> "<command>"
 ```
 
-Each instance has convenience aliases: `checkclaw` (service status + recent logs), `checkboot` (provision status + cloud-init log), and `reprovision` (sync latest playbooks from S3 and re-run).
+Each instance has convenience aliases: `checkclaw` (service status + recent logs), `checkboot` (provision status + cloud-init log), and `reprovision` (pull latest playbooks from git and re-run).
 
 ### Add / remove / pause / resume
 
@@ -153,7 +153,7 @@ Each instance has convenience aliases: `checkclaw` (service status + recent logs
 ./scripts/add-agent.sh                                  # interactive prompts
 ./scripts/remove-agent.sh <client-slug> <agent-slug>    # full teardown
 ./scripts/pause-agent.sh <client-slug> <agent-slug>     # snapshot + destroy (~2 min)
-./scripts/resume-agent.sh <client-slug> <agent-slug>    # restore from snapshot (~60s)
+./scripts/resume-agent.sh <client-slug> <agent-slug>    # restore from snapshot (~3 min to first message)
 ```
 
 ### Check costs

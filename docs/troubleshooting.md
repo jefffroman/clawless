@@ -92,8 +92,7 @@ aws ssm delete-parameter --name "/clawless/clients/<client>/<agent>/error" --reg
 If you need to re-run Ansible on a running instance after pushing playbook changes:
 
 ```bash
-./scripts/publish-ansible.sh                    # sync playbooks to S3
 ./scripts/ssm-run.sh --slug <client>-<agent> "reprovision"
 ```
 
-The `reprovision` alias syncs the latest playbooks from S3 and re-runs `provision-client.yml` with the embedded client vars from the original boot.
+The `reprovision` alias clones the repo at the `/clawless/version` ref and re-runs `provision-client.yml` with the client vars from `/opt/clawless/client-vars.json`.
