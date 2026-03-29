@@ -32,6 +32,7 @@
       - jq
       - python3-venv
       - python3-pip
+      - haveged
     state: present
 
 - name: Install shared Python packages (global, available to --system-site-packages venvs)
