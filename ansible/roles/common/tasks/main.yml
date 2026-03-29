@@ -125,7 +125,7 @@
     content: |
       alias checkclaw="systemctl --user status openclaw-gateway --no-pager;echo;journalctl --user-unit openclaw-gateway -n 50 --no-pager"
       alias checkboot="ls -la /home/ubuntu/.openclaw/.provisioned;echo;cat /var/log/cloud-init-output.log"
-      alias reprovision="sudo git clone --depth=1 --branch latest https://github.com/jefffroman/clawless.git /tmp/clawless-repo && sudo cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/ && sudo rm -rf /tmp/clawless-repo && cd /opt/clawless/ansible && sudo ansible-playbook playbooks/provision-client.yml -i localhost, -c local -e @/tmp/clawless-client-vars.json"
+      alias reprovision="V=\$(sudo aws ssm get-parameter --name /clawless/version --query Parameter.Value --output text --region us-east-1) && sudo rm -rf /tmp/clawless-repo && sudo git clone --depth=1 --branch \$V https://github.com/jefffroman/clawless.git /tmp/clawless-repo && sudo cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/ && sudo rm -rf /tmp/clawless-repo && cd /opt/clawless/ansible && sudo ansible-playbook playbooks/provision-client.yml -i localhost, -c local -e @/tmp/clawless-client-vars.json"
     owner: ubuntu
     group: ubuntu
     mode: "0644"
@@ -136,7 +136,7 @@
     content: |
       alias checkclaw="sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway --no-pager;echo;sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50 --no-pager"
       alias checkboot="ls -la /home/ubuntu/.openclaw/.provisioned;echo;cat /var/log/cloud-init-output.log"
-      alias reprovision="git clone --depth=1 --branch latest https://github.com/jefffroman/clawless.git /tmp/clawless-repo && cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/ && rm -rf /tmp/clawless-repo && cd /opt/clawless/ansible && ansible-playbook playbooks/provision-client.yml -i localhost, -c local -e @/tmp/clawless-client-vars.json"
+      alias reprovision="V=\$(aws ssm get-parameter --name /clawless/version --query Parameter.Value --output text --region us-east-1) && rm -rf /tmp/clawless-repo && git clone --depth=1 --branch \$V https://github.com/jefffroman/clawless.git /tmp/clawless-repo && cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/ && rm -rf /tmp/clawless-repo && cd /opt/clawless/ansible && ansible-playbook playbooks/provision-client.yml -i localhost, -c local -e @/tmp/clawless-client-vars.json"
     owner: root
     group: root
     mode: "0644"
