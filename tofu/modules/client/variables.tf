@@ -35,8 +35,8 @@ variable "backup_bucket" {
   type        = string
 }
 
-variable "ansible_s3_bucket" {
-  description = "S3 bucket name where ansible playbooks are published. Used for IAM policy (SSM RunCommand updates to running instances)."
+variable "clawless_version" {
+  description = "Git ref (tag or branch) to clone for Ansible playbooks at boot."
   type        = string
 }
 

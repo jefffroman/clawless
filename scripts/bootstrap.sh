@@ -84,8 +84,7 @@ hr
 ask ALERT_EMAIL "Alert email (Bedrock budget and backup failure notifications)"
 
 cat > "${TOFU_DIR}/terraform.tfvars" <<EOF
-alert_email       = "${ALERT_EMAIL}"
-ansible_s3_bucket = "${BUCKET}"
+alert_email = "${ALERT_EMAIL}"
 EOF
 echo "terraform.tfvars written"
 
@@ -106,18 +105,12 @@ aws ssm put-parameter \
   --region "${REGION}"
 echo "Version set to ${CLAWLESS_VERSION} (from current git ref)"
 
-# ── Add first agent ───────────────────────────────────────────────────────────
-hr
-echo "Add your first agent"
-hr
-"${SCRIPT_DIR}/add-agent.sh" --region "${REGION}"
-
 # ── Next steps ────────────────────────────────────────────────────────────────
 hr
 echo "Bootstrap complete. Next steps:"
 echo
-echo "  ./scripts/bake-snapshot.sh        # build golden image (includes ansible publish)"
+echo "  cd tofu && tofu init -backend-config=backend.hcl && tofu apply"
 echo "  ./scripts/build-lambda.sh         # build and push lifecycle Lambda image"
-echo "  cd tofu && tofu init -backend-config=backend.hcl"
-echo "  cd tofu && tofu apply"
+echo "  ./scripts/bake-snapshot.sh        # build golden image"
+echo "  ./scripts/add-agent.sh            # add your first agent"
 hr

@@ -35,9 +35,7 @@
     state: started
     daemon_reload: true
 
-# ── Wake greeting ─────────────────────────────────────────────────────────────
-# Sends a proactive greeting or replays a queued wake message from DynamoDB.
-# On resume: systemd starts it at boot. On first provision: Ansible starts it below.
+# ── Wake greeting script (deployed early, started after gateway is up) ────────
 - name: Deploy wake-greet script
   ansible.builtin.template:
     src: clawless-wake-greet.j2
@@ -45,13 +43,6 @@
     owner: root
     group: root
     mode: "0755"
-
-- name: Enable and start wake-greet service
-  ansible.builtin.systemd:
-    name: clawless-wake-greet
-    enabled: true
-    state: started
-    daemon_reload: true
 
 - name: Deploy credential_process helper script
   ansible.builtin.template:
@@ -109,3 +100,12 @@
   retries: 60
   delay: 5
   changed_when: false
+
+# Wake greeting: enabled here so systemd starts it on resume boots.
+# On first provision, it is *started* in post_tasks (provision-client.yml)
+# after memory indexing and handler-triggered gateway restart.
+- name: Enable wake-greet service (started in post_tasks)
+  ansible.builtin.systemd:
+    name: clawless-wake-greet
+    enabled: true
+    daemon_reload: true

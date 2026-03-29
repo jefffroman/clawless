@@ -152,26 +152,6 @@ resource "aws_iam_role_policy" "s3_backup" {
   policy = data.aws_iam_policy_document.s3_backup.json
 }
 
-data "aws_iam_policy_document" "s3_ansible" {
-  statement {
-    sid    = "AnsibleRead"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:ListBucket",
-    ]
-    resources = [
-      "arn:aws:s3:::${var.ansible_s3_bucket}",
-      "arn:aws:s3:::${var.ansible_s3_bucket}/ansible/*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "s3_ansible" {
-  name   = "s3-ansible-read"
-  role   = aws_iam_role.ssm.id
-  policy = data.aws_iam_policy_document.s3_ansible.json
-}
 
 data "aws_iam_policy_document" "cloudwatch_backup" {
   statement {
@@ -343,7 +323,8 @@ systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent
 # Ansible provisioning: skipped for resume (sentinel file present in per-client snapshot)
 # Client vars are embedded at tofu apply time — no AWS API calls needed from the instance.
 if [ ! -f /home/ubuntu/.openclaw/.provisioned ]; then
-  base64 -d > /tmp/clawless-client-vars.json <<'CLIENTVARS'
+  install -m 0600 /dev/null /opt/clawless/client-vars.json
+  base64 -d > /opt/clawless/client-vars.json <<'CLIENTVARS'
 ${base64encode(jsonencode({
   agent_slug              = var.agent_slug
   client_name             = var.client_name
@@ -359,11 +340,14 @@ ${base64encode(jsonencode({
   wake_messages_table_name = var.wake_messages_table_name
 }))}
 CLIENTVARS
+  git clone --depth=1 --branch ${var.clawless_version} https://github.com/jefffroman/clawless.git /tmp/clawless-repo
+  cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/
+  rm -rf /tmp/clawless-repo
   cd /opt/clawless/ansible
   ansible-playbook playbooks/provision-client.yml \
     -i localhost, \
     -c local \
-    -e "@/tmp/clawless-client-vars.json"
+    -e "@/opt/clawless/client-vars.json"
 fi
 USERDATA
       aws lightsail create-instances-from-snapshot \

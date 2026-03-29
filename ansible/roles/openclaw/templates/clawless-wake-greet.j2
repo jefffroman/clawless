@@ -23,7 +23,13 @@ fi
 # ── Wait for gateway ─────────────────────────────────────────────────────────
 echo "Waiting for OpenClaw gateway..."
 elapsed=0
-while ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; do
+while true; do
+  HTTP_CODE=$(curl -s -o /tmp/health-response -w '%{http_code}' "${GATEWAY}/health" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "Gateway healthy after ${elapsed}s."
+    break
+  fi
+  echo "  ${elapsed}s: HTTP ${HTTP_CODE} $(cat /tmp/health-response 2>/dev/null || true)"
   sleep 5
   elapsed=$((elapsed + 5))
   if [ "$elapsed" -ge "$MAX_WAIT" ]; then
@@ -31,7 +37,6 @@ while ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; do
     exit 1
   fi
 done
-echo "Gateway healthy after ${elapsed}s."
 
 # ── Read agent config from SSM ───────────────────────────────────────────────
 AGENT_CONFIG=$(aws ssm get-parameter \
