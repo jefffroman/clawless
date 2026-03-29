@@ -1,7 +1,6 @@
 [Unit]
-Description=Clawless wake greeting (post-resume proactive message)
+Description=Clawless wake greeting (proactive message on provision or resume)
 After=network-online.target
-ConditionPathExists=/home/ubuntu/.openclaw/.provisioned
 
 [Service]
 Type=oneshot

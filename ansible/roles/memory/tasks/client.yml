@@ -67,8 +67,8 @@
     cmd: >
       {{ openclaw_workspace_dir }}/vector_memory/venv/bin/python
       {{ openclaw_workspace_dir }}/vector_memory/indexer.py
+    creates: "{{ openclaw_workspace_dir }}/vector_memory/chroma_db/chroma.sqlite3"
   become_user: "{{ openclaw_user }}"
-  changed_when: true  # indexer always produces output
 
 - name: Enable and start reindex timer
   ansible.builtin.systemd:

@@ -73,7 +73,10 @@ data "aws_iam_policy_document" "bedrock" {
     sid       = "BedrockInvokeModel"
     effect    = "Allow"
     actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-    resources = [data.aws_bedrock_inference_profile.model.inference_profile_arn]
+    resources = concat(
+      [data.aws_bedrock_inference_profile.model.inference_profile_arn],
+      [for m in data.aws_bedrock_inference_profile.model.models : m.model_arn]
+    )
   }
 
   # Required for cross-region inference profiles (us.anthropic.*, us.amazon.*)

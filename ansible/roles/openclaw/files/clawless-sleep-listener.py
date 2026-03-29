@@ -1,11 +1,13 @@
-"""Loopback HTTP listener for agent self-sleep.
+"""HTTP listener for agent self-sleep.
 
-Binds to 127.0.0.1:18790 and exposes a single endpoint:
+Binds to 0.0.0.0:18790 and exposes a single endpoint:
 
     POST /sleep  — runs /usr/local/bin/clawless-sleep on the host
 
-The sandbox container reaches this via host.docker.internal:18790.
-No authentication — loopback only, same trust boundary as the gateway.
+The sandbox container reaches this via host.docker.internal:18790
+(resolves to the Docker bridge IP, not 127.0.0.1).
+No authentication — Lightsail firewall blocks all inbound traffic,
+so only localhost and Docker containers can reach this port.
 """
 
 import asyncio
@@ -35,4 +37,4 @@ app = web.Application()
 app.router.add_post("/sleep", handle_sleep)
 
 if __name__ == "__main__":
-    web.run_app(app, host="127.0.0.1", port=18790)
+    web.run_app(app, host="0.0.0.0", port=18790)
