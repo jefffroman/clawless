@@ -219,6 +219,33 @@ resource "aws_dynamodb_table" "lifecycle_pending" {
   tags = var.tags
 }
 
+# ── Wake Messages Table ──────────────────────────────────────────────────────
+# Stores pending wake messages keyed by agent slug. On resume, the wake-greet
+# script reads and deletes its own entry. The write side (wake-listener Lambda)
+# comes in a future phase; for now the table enables the read path so the
+# wake-greet script is built once with the full DynamoDB check.
+#
+# Single item per slug. Schemaless attributes: message, channel, sender, timestamp.
+# TTL auto-cleans stale messages (7-day default set by the writer).
+
+resource "aws_dynamodb_table" "wake_messages" {
+  name         = "clawless-wake-messages"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "slug"
+
+  attribute {
+    name = "slug"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
 # ── Step Functions Express Workflow ───────────────────────────────────────────
 # Four states: extract slug → write pending (UpdateItem, last-write-wins) →
 # check if a Lambda already owns this slug → invoke Lambda if not.

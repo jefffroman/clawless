@@ -1,0 +1,14 @@
+[Unit]
+Description=Clawless wake greeting (post-resume proactive message)
+After=network-online.target
+ConditionPathExists=/home/ubuntu/.openclaw/.provisioned
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clawless-wake-greet
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

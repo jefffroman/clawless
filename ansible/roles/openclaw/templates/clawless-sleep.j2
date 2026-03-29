@@ -1,0 +1,34 @@
+#!/bin/bash
+# Self-sleep: sets this agent's /active parameter to "false" and invokes
+# the lifecycle Step Functions workflow to snapshot and destroy this instance.
+#
+# Deployed by Ansible with the agent's slug and SFN ARN baked in.
+# The agent (or an MCP tool) just runs `clawless-sleep` — no SSM path
+# or SFN ARN knowledge needed.
+
+set -euo pipefail
+
+PARAM="/clawless/clients/{{ agent_slug }}/active"
+REGION="{{ openclaw_bedrock_region }}"
+SFN_ARN="{{ lifecycle_sfn_arn }}"
+
+echo "Putting this agent to sleep ({{ agent_slug }})..."
+
+aws ssm put-parameter \
+  --name "$PARAM" \
+  --type String \
+  --overwrite \
+  --value "false" \
+  --region "$REGION" >/dev/null
+
+SFN_INPUT=$(jq -cn \
+  --arg name "/clawless/clients/{{ agent_slug }}" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update"}')
+
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
+  --region "$REGION" >/dev/null
+
+echo "Sleep triggered. This instance will be snapshotted and shut down shortly."

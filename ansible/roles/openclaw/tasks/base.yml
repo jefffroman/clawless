@@ -87,3 +87,29 @@
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
     mode: "0644"
+
+# ── Sleep listener (loopback HTTP for sandbox → host sleep trigger) ───────────
+- name: Deploy sleep listener script
+  ansible.builtin.copy:
+    src: clawless-sleep-listener.py
+    dest: /opt/clawless/clawless-sleep-listener.py
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy sleep listener systemd unit
+  ansible.builtin.copy:
+    src: clawless-sleep-listener.service
+    dest: /etc/systemd/system/clawless-sleep-listener.service
+    owner: root
+    group: root
+    mode: "0644"
+
+# ── Wake greeting (post-resume proactive message) ────────────────────────────
+- name: Deploy wake-greet systemd unit
+  ansible.builtin.copy:
+    src: clawless-wake-greet.service
+    dest: /etc/systemd/system/clawless-wake-greet.service
+    owner: root
+    group: root
+    mode: "0644"

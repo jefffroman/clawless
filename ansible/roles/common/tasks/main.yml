@@ -33,6 +33,12 @@
       - python3-venv
     state: present
 
+- name: Install shared Python packages (global, available to --system-site-packages venvs)
+  ansible.builtin.pip:
+    name:
+      - aiohttp
+    state: present
+
 - name: Add NodeSource repository for Node.js 22
   ansible.builtin.shell:
     cmd: curl -fsSL https://deb.nodesource.com/setup_22.x | bash -

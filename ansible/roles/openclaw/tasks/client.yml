@@ -15,17 +15,42 @@
     openclaw_state_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw"
     openclaw_workspace_dir: "{{ openclaw_getent.stdout.split(':')[5] }}/.openclaw/workspace"
 
-# ── Self-pause helper ─────────────────────────────────────────────────────────
-# Deployed to /usr/local/bin so the agent can pause itself without knowing
-# the SSM parameter path. IAM policy scopes ssm:PutParameter to exactly
-# this agent's /active parameter.
-- name: Deploy self-pause helper script
+# ── Self-sleep helper ─────────────────────────────────────────────────────────
+# Deployed to /usr/local/bin so the agent can sleep itself without knowing
+# SSM parameter paths or SFN ARNs. IAM policy scopes ssm:PutParameter to
+# exactly this agent's /active parameter, and states:StartExecution to the
+# lifecycle SFN.
+- name: Deploy self-sleep helper script
   ansible.builtin.template:
-    src: clawless-pause-self.j2
-    dest: /usr/local/bin/clawless-pause-self
+    src: clawless-sleep.j2
+    dest: /usr/local/bin/clawless-sleep
     owner: root
     group: root
     mode: "0755"
+
+- name: Ensure sleep listener is enabled and running
+  ansible.builtin.systemd:
+    name: clawless-sleep-listener
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── Wake greeting ─────────────────────────────────────────────────────────────
+# Runs on resume (not first provision) to send a proactive greeting or replay
+# a queued wake message from DynamoDB.
+- name: Deploy wake-greet script
+  ansible.builtin.template:
+    src: clawless-wake-greet.j2
+    dest: /usr/local/bin/clawless-wake-greet
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Enable wake-greet service
+  ansible.builtin.systemd:
+    name: clawless-wake-greet
+    enabled: true
+    daemon_reload: true
 
 - name: Deploy credential_process helper script
   ansible.builtin.template:

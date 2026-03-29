@@ -82,6 +82,21 @@ variable "active" {
   default     = true
 }
 
+variable "lifecycle_sfn_arn" {
+  description = "ARN of the lifecycle Step Functions state machine. Baked into the self-sleep helper and used for IAM scoping."
+  type        = string
+}
+
+variable "wake_messages_table_arn" {
+  description = "ARN of the clawless-wake-messages DynamoDB table."
+  type        = string
+}
+
+variable "wake_messages_table_name" {
+  description = "Name of the clawless-wake-messages DynamoDB table. Baked into the wake-greet script."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags to merge onto all resources alongside the per-client Client tag."
   type        = map(string)
