@@ -27,3 +27,8 @@ output "archive_bucket" {
   description = "Name of the shared S3 archive bucket where removed clients' data is retained for 90 days."
   value       = aws_s3_bucket.backups.bucket
 }
+
+output "wake_listener_url" {
+  description = "Function URL of the wake listener Lambda. Used by lifecycle Lambda to set Telegram webhooks on pause."
+  value       = aws_lambda_function_url.wake_listener.function_url
+}
