@@ -111,7 +111,7 @@ def lambda_handler(event, context):
             )
         except ClientError as e:
             print(f"DynamoDB append failed: {e}")
-        _send_telegram_reply(agent_path, sender.get("id"), "Got it — still waking up!")
+        _send_telegram_reply(agent_path, sender.get("id"), "_(Got it — still waking up!)_")
         return {"statusCode": 200, "body": "ok"}
 
     # ── First wake message — write to DynamoDB ───────────────────────────
@@ -153,7 +153,7 @@ def lambda_handler(event, context):
         _alert(f"Wake listener failed to invoke SFN for {agent_path}: {e}")
 
     # ── Reply to user on Telegram ────────────────────────────────────────
-    _send_telegram_reply(agent_path, sender.get("id"), "Waking up \u2014 give me a few minutes")
+    _send_telegram_reply(agent_path, sender.get("id"), "_(Waking up — give me a few minutes)_")
 
     return {"statusCode": 200, "body": "ok"}
 
@@ -179,7 +179,7 @@ def _send_telegram_reply(agent_path, chat_id, text):
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode()
 
     try:
         req = urllib.request.Request(url, data=data, method="POST")
