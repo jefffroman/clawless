@@ -104,7 +104,7 @@ def lambda_handler(event, context):
         for slug in fast_slugs:
             if slug in agents and agents[slug].get("active", True):
                 _maybe_delete_pause_snapshot(slug)
-                _deregister_offline_instances(slug)
+                _deregister_managed_instances(slug)
 
     # ── Step 4: SLOW PATH — stop, snapshot, destroy ────────────────────
     if slow_slugs:
@@ -152,12 +152,13 @@ def lambda_handler(event, context):
                         errored_slugs = {s for s, c in agents.items() if c.get("_error")}
                         _apply_with_retry(version, agents, {slug}, errored_slugs)
                         _maybe_delete_pause_snapshot(slug)
-                        _deregister_offline_instances(slug)
+                        _deregister_managed_instances(slug)
 
-            # Wait for destroyed instances to disappear
+            # Wait for destroyed instances to disappear, then clean up MIs
             for slug in destroy_slugs:
                 if not _intent_changed(slug, grabbed[slug]["timestamp"]):
                     _wait_for_instance_gone(slug)
+                    _deregister_managed_instances(slug, require_online=False)
 
     # ── Step 5: RELEASE — conditional delete for each owned slug ───────
     for slug, info in grabbed.items():
@@ -769,15 +770,18 @@ def _maybe_delete_pause_snapshot(agent_path):
         print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
 
 
-def _deregister_offline_instances(agent_path):
-    """Deregister offline managed instances for this agent's IAM role (orphan cleanup).
+def _deregister_managed_instances(agent_path, require_online=True):
+    """Deregister managed instances for this agent's IAM role.
 
     Each pause/resume cycle creates a new MI ID, leaving the previous one
-    orphaned in SSM. This sweeps them after a successful resume.
+    orphaned in SSM.
 
-    Only acts if at least one instance is already Online — avoids racing with
-    a freshly booting instance that hasn't sent its first ping yet. Orphans
-    that survive this run will be caught on the next lifecycle event.
+    require_online=True (resume fast path): only deregister offline instances,
+      and only if at least one is Online — avoids racing with a freshly booting
+      instance that hasn't sent its first ping yet.
+    require_online=False (pause/remove slow path): deregister all instances
+      unconditionally — the Lightsail instance is destroyed so all MIs will be
+      ConnectionLost.
     """
     slug = _resource_slug(agent_path)
     role_name = f"clawless-{slug}-ssm"
@@ -787,16 +791,21 @@ def _deregister_offline_instances(agent_path):
     for page in paginator.paginate(Filters=[{"Key": "IamRole", "Values": [role_name]}]):
         all_instances.extend(page["InstanceInformationList"])
 
-    online  = [i for i in all_instances if i["PingStatus"] == "Online"]
-    offline = [i for i in all_instances if i["PingStatus"] != "Online"]
+    if require_online:
+        online  = [i for i in all_instances if i["PingStatus"] == "Online"]
+        targets = [i for i in all_instances if i["PingStatus"] != "Online"]
+        if not online:
+            print(f"[cleanup:{slug}] no online instance yet — skipping orphan deregistration")
+            return
+    else:
+        targets = all_instances
 
-    if not online:
-        print(f"[cleanup:{slug}] no online instance yet — skipping orphan deregistration")
+    if not targets:
         return
 
-    for instance in offline:
+    print(f"[cleanup:{slug}] deregistering {len(targets)} managed instance(s)")
+    for instance in targets:
         mi_id = instance["InstanceId"]
-        print(f"[cleanup:{slug}] deregistering orphaned instance {mi_id}")
         try:
             ssm.deregister_managed_instance(InstanceId=mi_id)
         except ClientError as e:

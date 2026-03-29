@@ -152,26 +152,6 @@ resource "aws_iam_role_policy" "s3_backup" {
   policy = data.aws_iam_policy_document.s3_backup.json
 }
 
-data "aws_iam_policy_document" "s3_ansible" {
-  statement {
-    sid    = "AnsibleRead"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:ListBucket",
-    ]
-    resources = [
-      "arn:aws:s3:::${var.ansible_s3_bucket}",
-      "arn:aws:s3:::${var.ansible_s3_bucket}/ansible/*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "s3_ansible" {
-  name   = "s3-ansible-read"
-  role   = aws_iam_role.ssm.id
-  policy = data.aws_iam_policy_document.s3_ansible.json
-}
 
 data "aws_iam_policy_document" "cloudwatch_backup" {
   statement {
@@ -359,6 +339,9 @@ ${base64encode(jsonencode({
   wake_messages_table_name = var.wake_messages_table_name
 }))}
 CLIENTVARS
+  git clone --depth=1 --branch ${var.clawless_version} https://github.com/jefffroman/clawless.git /tmp/clawless-repo
+  cp -r /tmp/clawless-repo/ansible/* /opt/clawless/ansible/
+  rm -rf /tmp/clawless-repo
   cd /opt/clawless/ansible
   ansible-playbook playbooks/provision-client.yml \
     -i localhost, \

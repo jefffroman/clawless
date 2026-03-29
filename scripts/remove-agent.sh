@@ -61,21 +61,30 @@ if [[ "$FORCE" == false ]]; then
   fi
 fi
 
-# Delete agent record, active flag, and any error state
-if [[ "$SSM_MISSING" == false ]]; then
-  log "Deleting ${AGENT_PARAM}..."
-  aws ssm delete-parameter --name "$AGENT_PARAM" --region "$REGION"
-fi
+# Delete active flag and error state (the main SSM record is deleted by the
+# Step Functions DeleteSSM state — deleting it here would cause SFN to fail
+# with ParameterNotFound since DeleteSSM has no error handling).
 aws ssm delete-parameter --name "${AGENT_PARAM}/active" --region "$REGION" 2>/dev/null || true
 aws ssm delete-parameter --name "${AGENT_PARAM}/error" --region "$REGION" 2>/dev/null || true
 
 log "Invoking Step Functions (lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
   --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+
+# If the SSM record is already gone, use "Update" to skip the SFN DeleteSSM
+# state (which would fail with ParameterNotFound). The Lambda detects removed
+# agents by comparing tofu state vs SSM — the param just needs to be absent.
+if [[ "$SSM_MISSING" == true ]]; then
+  SFN_OP="Update"
+else
+  SFN_OP="Delete"
+fi
+
 SFN_INPUT=$(jq -cn \
   --arg name "$AGENT_PARAM" \
   --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{event_id: (now | tostring), time: $time, name: $name, operation: "Delete"}')
+  --arg op "$SFN_OP" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: $op}')
 aws stepfunctions start-execution \
   --state-machine-arn "$SFN_ARN" \
   --input "$SFN_INPUT" \

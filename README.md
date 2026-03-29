@@ -98,14 +98,21 @@ export AWS_DEFAULT_REGION=us-east-1
 
 Prompts for AWS region and alert email. Creates the S3 state bucket, local config files, and sets `/clawless/version` to the current git ref. See [docs/versioning.md](docs/versioning.md).
 
-### 2. Initialize OpenTofu
+### 2. Initialize OpenTofu and Apply
 
 ```bash
 cd tofu
 tofu init -backend-config=backend.hcl
+tofu apply
 ```
 
-### 3. Bake the Golden Snapshot
+### 3. Build and Push the Lifecycle Lambda
+
+```bash
+./scripts/build-lambda.sh
+```
+
+### 4. Bake the Golden Snapshot
 
 ```bash
 ./scripts/bake-snapshot.sh
@@ -113,7 +120,7 @@ tofu init -backend-config=backend.hcl
 
 Bake once before adding your first agent. Re-bake when system packages or base playbooks change. First bake takes ~15 minutes; subsequent bakes are incremental (start from the previous snapshot) and take ~10 minutes. See [docs/golden-snapshot.md](docs/golden-snapshot.md).
 
-### 4. Add Your First Agent
+### 5. Add Your First Agent
 
 ```bash
 ./scripts/add-agent.sh
@@ -158,9 +165,10 @@ python3 scripts/check-costs.py 7    # Last 7 days
 ### Update playbooks on a running instance
 
 ```bash
-./scripts/publish-ansible.sh
 ./scripts/ssm-run.sh --slug <client>-<agent> "reprovision"
 ```
+
+Pulls the latest Ansible from git and re-runs client provisioning.
 
 ### Deploy infrastructure changes
 

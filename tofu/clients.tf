@@ -9,6 +9,10 @@
 # Client slug uniqueness is enforced by the storefront (clawless-platform).
 # Tofu derives a globally unique agent key: "{client_slug}/{agent_slug}".
 
+data "aws_ssm_parameter" "version" {
+  name = "/clawless/version"
+}
+
 data "aws_ssm_parameters_by_path" "clawless" {
   path            = "/clawless/clients"
   recursive       = true
