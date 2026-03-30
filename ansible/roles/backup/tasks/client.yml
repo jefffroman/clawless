@@ -15,6 +15,9 @@
         "{{ openclaw_workspace_dir }}/" \
         "s3://{{ openclaw_backup_bucket }}/agents/{{ agent_slug }}/workspace/" \
         --delete \
+        --exclude "vector_memory/venv/*" \
+        --exclude "vector_memory/chroma_db/*" \
+        --exclude "vector_memory/__pycache__/*" \
         --no-progress; then
         aws cloudwatch put-metric-data \
           --region "{{ openclaw_bedrock_region }}" \
