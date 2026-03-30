@@ -40,6 +40,18 @@ When an agent is removed, the Lambda copies all objects from the agent's backup 
 
 Pausing does **not** touch backups. The instance is snapshotted and destroyed, but S3 data remains intact. On resume, the instance is recreated from the snapshot — the backup timer resumes automatically.
 
+## Excluded from backup
+
+The following directories are reproducible and excluded from sync to avoid excessive S3 request costs (PyTorch alone adds ~50K tiny files per agent):
+
+| Path | Reason | Rebuilt by |
+|------|--------|------------|
+| `vector_memory/venv/` | Python virtualenv (PyTorch, chromadb, etc.) | Ansible `memory` role (`base.yml`) |
+| `vector_memory/chroma_db/` | ChromaDB vector store | `vector_memory/indexer.py` |
+| `vector_memory/__pycache__/` | Bytecode cache | Python runtime |
+
+These match the workspace `.gitignore` entries.
+
 ## Restore from S3
 
 To restore a workspace from backup onto a running instance:
@@ -48,6 +60,14 @@ To restore a workspace from backup onto a running instance:
 # Restore the latest workspace backup
 ./scripts/ssm-run.sh --slug <client>-<agent> \
   "aws s3 sync s3://clawless-backups-\$(aws sts get-caller-identity --query Account --output text)/agents/<client>/<agent>/workspace/ /home/ubuntu/.openclaw/workspace/ && sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user restart openclaw-gateway"
+```
+
+After restoring, rebuild the excluded directories:
+
+```bash
+# Recreate venv and reindex (run via SSM)
+./scripts/ssm-run.sh --slug <client>-<agent> \
+  "cd /home/ubuntu/.openclaw/workspace && python3 -m venv vector_memory/venv && vector_memory/venv/bin/pip install chromadb sentence-transformers networkx rank-bm25 && vector_memory/venv/bin/python vector_memory/indexer.py"
 ```
 
 To restore a removed agent's workspace (after re-adding the agent):
