@@ -196,5 +196,19 @@
         dest: /usr/lib/node_modules/openclaw/skills/sleep/SKILL.md
         mode: "0644"
 
+    # Memory curation skill: custom (not on ClawHub), deployed directly to the
+    # bundled skills directory. Instructions-only — no scripts.
+    - name: Create memory-curation skill directory
+      ansible.builtin.file:
+        path: /usr/lib/node_modules/openclaw/skills/memory-curation
+        state: directory
+        mode: "0755"
+
+    - name: Deploy memory-curation SKILL.md
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../roles/memory/files/memory-curation/SKILL.md"
+        dest: /usr/lib/node_modules/openclaw/skills/memory-curation/SKILL.md
+        mode: "0644"
+
     # Memory venv/packages and SearXNG clone/venv/pip are now handled by
     # the respective role base.yml tasks above — no need to duplicate here.

@@ -65,8 +65,9 @@
       WORKSPACE="{{ openclaw_workspace_dir }}"
       VENV="${WORKSPACE}/vector_memory/venv"
       cd "${WORKSPACE}"
-      if "${VENV}/bin/python" vector_memory/auto_retrieve.py --status 2>/dev/null \
-          | grep -q '"OUT_OF_SYNC"'; then
+      if [ ! -d "${WORKSPACE}/vector_memory/chroma_db" ] || \
+         "${VENV}/bin/python" vector_memory/auto_retrieve.py --status 2>/dev/null \
+          | grep -qE '"(OUT_OF_SYNC|UNKNOWN)"'; then
         exec "${VENV}/bin/python" vector_memory/indexer.py
       fi
 

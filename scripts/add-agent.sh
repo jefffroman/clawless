@@ -48,7 +48,7 @@ echo "  SSM path:    /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
-ask CHANNEL "Channel (telegram / discord / slack / other)" "telegram"
+ask CHANNEL "Channel (telegram / discord / slack)" "telegram"
 CHANNEL="$(echo "$CHANNEL" | tr '[:upper:]' '[:lower:]')"
 
 case "$CHANNEL" in
@@ -80,12 +80,8 @@ case "$CHANNEL" in
       '{"enabled": true, "mode": "socket", "appToken": $app, "botToken": $bot, "dmPolicy": "allowlist", "allowFrom": [$peer]}')"
     ;;
   *)
-    echo "Paste the channel_config JSON for this provider (see docs.openclaw.ai/channels)."
-    read -rp "channel_config JSON: " CHANNEL_CONFIG
-    if ! echo "$CHANNEL_CONFIG" | jq . >/dev/null 2>&1; then
-      echo "Error: invalid JSON" >&2
-      exit 1
-    fi
+    echo "Error: unsupported channel '$CHANNEL'. Supported: telegram, discord, slack" >&2
+    exit 1
     ;;
 esac
 
