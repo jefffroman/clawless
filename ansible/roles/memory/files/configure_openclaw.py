@@ -130,6 +130,9 @@ def patch_config():
     skills["sleep"] = {"enabled": True}
     print("skills.entries.sleep patched: enabled")
 
+    skills["memory-curation"] = {"enabled": True}
+    print("skills.entries.memory-curation patched: enabled")
+
     if CHANNEL and CHANNEL_CONFIG:
         # Merge into any existing channel block so manually-added fields
         # (e.g. allowFrom entries added via pairing) survive re-runs.

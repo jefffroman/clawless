@@ -14,6 +14,7 @@ This agent uses a three-layer memory system. **MEMORY.md is the source of truth*
 
 - Read `MEMORY.md` first for current context
 - Query L2 (`vector_memory/search.py`) before answering memory questions
+- Use the **memory-curation** skill to save learnings and maintain MEMORY.md
 - After editing any L1 file, re-index: `vector_memory/indexer.py`
 - The indexer runs automatically every 5 minutes via systemd timer
 
