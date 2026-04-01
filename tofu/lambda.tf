@@ -186,11 +186,10 @@ resource "aws_lambda_function" "lifecycle" {
 
   environment {
     variables = {
-      STATE_BUCKET      = local.state_bucket
-      REPO_URL          = "https://github.com/jefffroman/clawless"
-      LIFECYCLE_TABLE   = aws_dynamodb_table.lifecycle_pending.name
-      SNS_TOPIC_ARN     = aws_sns_topic.alerts.arn
-      WAKE_LISTENER_URL = aws_lambda_function_url.wake_listener.function_url
+      STATE_BUCKET    = local.state_bucket
+      REPO_URL        = "https://github.com/jefffroman/clawless"
+      LIFECYCLE_TABLE = aws_dynamodb_table.lifecycle_pending.name
+      SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
     }
   }
 

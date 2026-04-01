@@ -34,9 +34,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import urllib.parse
-import urllib.request
-
 import boto3
 from botocore.exceptions import ClientError
 
@@ -52,7 +49,6 @@ REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
 LIFECYCLE_TABLE = os.environ.get("LIFECYCLE_TABLE", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
-WAKE_LISTENER_URL = os.environ.get("WAKE_LISTENER_URL", "")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 LOCK_RETRY_INTERVAL = 3   # seconds between retries when state lock is held
@@ -101,10 +97,6 @@ def lambda_handler(event, context):
 
     # ── Step 3: FAST PATH — tofu apply for resumes/adds ────────────────
     if fast_slugs:
-        # Delete Telegram webhooks before resuming so OpenClaw can long-poll
-        for slug in fast_slugs:
-            _maybe_delete_telegram_webhook(slug, agents)
-
         print(f"Fast path (resumes/adds): {sorted(fast_slugs)}")
         _apply_with_retry(version, agents, fast_slugs, errored_slugs)
 
@@ -166,10 +158,6 @@ def lambda_handler(event, context):
                 if not _intent_changed(slug, grabbed[slug]["timestamp"]):
                     _wait_for_instance_gone(slug)
                     _deregister_managed_instances(slug, require_online=False)
-
-            # Set Telegram webhooks for paused agents (not removals)
-            for slug in pause_slugs - abandoned:
-                _maybe_set_telegram_webhook(slug, agents)
 
     # ── Step 5: RELEASE — conditional delete for each owned slug ───────
     for slug, info in grabbed.items():
@@ -821,64 +809,6 @@ def _deregister_managed_instances(agent_path, require_online=True):
             ssm.deregister_managed_instance(InstanceId=mi_id)
         except ClientError as e:
             print(f"[cleanup:{slug}] WARNING: failed to deregister {mi_id}: {e}")
-
-
-# ── Telegram webhook management ─────────────────────────────────────────────
-
-def _maybe_set_telegram_webhook(agent_path, agents):
-    """Set Telegram webhook to wake listener for a paused agent."""
-    cfg = agents.get(agent_path, {})
-    if cfg.get("agent_channel") != "telegram":
-        return
-    bot_token = (cfg.get("channel_config") or {}).get("botToken")
-    if not bot_token or not WAKE_LISTENER_URL:
-        return
-    _set_telegram_webhook(agent_path, bot_token, WAKE_LISTENER_URL)
-
-
-def _maybe_delete_telegram_webhook(agent_path, agents):
-    """Delete Telegram webhook before resuming so OpenClaw can long-poll."""
-    cfg = agents.get(agent_path, {})
-    if cfg.get("agent_channel") != "telegram":
-        return
-    bot_token = (cfg.get("channel_config") or {}).get("botToken")
-    if not bot_token:
-        return
-    _delete_telegram_webhook(agent_path, bot_token)
-
-
-def _set_telegram_webhook(agent_path, bot_token, wake_url):
-    """Call Telegram setWebhook to redirect bot messages to the wake listener."""
-    slug = _resource_slug(agent_path)
-    url = f"https://api.telegram.org/bot{bot_token}/setWebhook"
-    data = urllib.parse.urlencode({
-        "url": wake_url,
-        "secret_token": slug,
-        "allowed_updates": json.dumps(["message"]),
-    }).encode()
-
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
-            print(f"[webhook:{slug}] setWebhook: {resp.status} {body}")
-    except Exception as e:
-        print(f"[webhook:{slug}] setWebhook FAILED: {e}")
-        _send_alert("Webhook failure", f"Failed to set Telegram webhook for {agent_path}: {e}")
-
-
-def _delete_telegram_webhook(agent_path, bot_token):
-    """Call Telegram deleteWebhook so OpenClaw can resume long-polling."""
-    slug = _resource_slug(agent_path)
-    url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook"
-
-    try:
-        req = urllib.request.Request(url, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
-            print(f"[webhook:{slug}] deleteWebhook: {resp.status} {body}")
-    except Exception as e:
-        print(f"[webhook:{slug}] deleteWebhook FAILED: {e}")
 
 
 def _backup_agent_to_shared(agent_path, account_id):

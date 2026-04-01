@@ -337,6 +337,7 @@ ${base64encode(jsonencode({
   channel_config          = var.channel_config
   iam_role_arn             = aws_iam_role.ssm.arn
   lifecycle_sfn_arn        = var.lifecycle_sfn_arn
+  wake_listener_url        = var.wake_listener_url
   wake_messages_table_name = var.wake_messages_table_name
 }))}
 CLIENTVARS

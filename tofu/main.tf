@@ -18,6 +18,7 @@ module "client" {
   backup_bucket        = aws_s3_bucket.backups.id
   clawless_version     = data.aws_ssm_parameter.version.value
   lifecycle_sfn_arn        = aws_sfn_state_machine.lifecycle.arn
+  wake_listener_url        = aws_lambda_function_url.wake_listener.function_url
   wake_messages_table_arn  = aws_dynamodb_table.wake_messages.arn
   wake_messages_table_name = aws_dynamodb_table.wake_messages.name
   tags                     = var.tags

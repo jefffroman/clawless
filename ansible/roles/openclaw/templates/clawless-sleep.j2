@@ -8,12 +8,37 @@
 
 set -euo pipefail
 
-PARAM="/clawless/clients/{{ agent_slug }}/active"
+SLUG="{{ agent_slug }}"
+PARAM="/clawless/clients/${SLUG}/active"
 REGION="{{ openclaw_bedrock_region }}"
 SFN_ARN="{{ lifecycle_sfn_arn }}"
+WAKE_LISTENER_URL="{{ wake_listener_url }}"
 
-echo "Putting this agent to sleep ({{ agent_slug }})..."
+echo "Putting this agent to sleep (${SLUG})..."
 
+# ── Redirect Telegram webhook to wake listener ──────────────────────────────
+{% if agent_channel | lower == "telegram" %}
+AGENT_CONFIG=$(aws ssm get-parameter \
+  --name "/clawless/clients/${SLUG}" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text \
+  --region "$REGION" 2>/dev/null || true)
+
+BOT_TOKEN=$(echo "$AGENT_CONFIG" | jq -r '.channel_config.botToken // empty')
+RESOURCE_SLUG=$(echo "$SLUG" | tr '/' '-')
+
+if [ -n "$BOT_TOKEN" ] && [ -n "$WAKE_LISTENER_URL" ]; then
+  echo "Setting Telegram webhook to wake listener..."
+  curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+    -d "url=${WAKE_LISTENER_URL}" \
+    -d "secret_token=${RESOURCE_SLUG}" \
+    -d "allowed_updates=[\"message\"]" \
+    >/dev/null && echo "Webhook set." || echo "WARNING: setWebhook failed"
+fi
+{% endif %}
+
+# ── Set /active=false and trigger lifecycle ──────────────────────────────────
 aws ssm put-parameter \
   --name "$PARAM" \
   --type String \
@@ -22,7 +47,7 @@ aws ssm put-parameter \
   --region "$REGION" >/dev/null
 
 SFN_INPUT=$(jq -cn \
-  --arg name "/clawless/clients/{{ agent_slug }}" \
+  --arg name "/clawless/clients/${SLUG}" \
   --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{event_id: (now | tostring), time: $time, name: $name, operation: "Update"}')
 

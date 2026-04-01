@@ -87,6 +87,11 @@ variable "lifecycle_sfn_arn" {
   type        = string
 }
 
+variable "wake_listener_url" {
+  description = "Function URL of the wake listener Lambda. Baked into the self-sleep helper for setWebhook."
+  type        = string
+}
+
 variable "wake_messages_table_arn" {
   description = "ARN of the clawless-wake-messages DynamoDB table."
   type        = string
