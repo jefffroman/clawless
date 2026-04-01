@@ -1,0 +1,39 @@
+#!/bin/bash
+# Set Telegram webhook to the wake listener Lambda on gateway stop.
+# Called by ExecStopPost in the openclaw-gateway systemd drop-in.
+# No-op for non-Telegram agents.
+#
+# Deployed by Ansible with agent slug, region, and wake listener URL baked in.
+
+set -euo pipefail
+
+SLUG="{{ agent_slug }}"
+REGION="{{ openclaw_bedrock_region }}"
+WAKE_LISTENER_URL="{{ wake_listener_url }}"
+{% if agent_channel | lower != "telegram" %}
+exit 0
+{% endif %}
+
+if [ -z "$WAKE_LISTENER_URL" ]; then
+  echo "No wake listener URL configured — skipping webhook"
+  exit 0
+fi
+
+AGENT_CONFIG=$(aws ssm get-parameter \
+  --name "/clawless/clients/${SLUG}" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text \
+  --region "$REGION" 2>/dev/null || true)
+
+BOT_TOKEN=$(echo "$AGENT_CONFIG" | jq -r '.channel_config.botToken // empty')
+RESOURCE_SLUG=$(echo "$SLUG" | tr '/' '-')
+
+if [ -n "$BOT_TOKEN" ]; then
+  echo "Setting Telegram webhook to wake listener..."
+  curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+    -d "url=${WAKE_LISTENER_URL}" \
+    -d "secret_token=${RESOURCE_SLUG}" \
+    -d "allowed_updates=[\"message\"]" \
+    >/dev/null && echo "Webhook set." || echo "WARNING: setWebhook failed"
+fi

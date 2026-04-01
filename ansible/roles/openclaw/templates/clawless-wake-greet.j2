@@ -59,16 +59,6 @@ if [ -z "$CHANNEL" ] || [ -z "$PEER_ID" ]; then
   exit 0
 fi
 
-# ── Delete Telegram webhook so long-polling takes over ──────────────────────
-if [ "$CHANNEL" = "telegram" ]; then
-  BOT_TOKEN=$(echo "$AGENT_CONFIG" | jq -r '.channel_config.botToken // empty')
-  if [ -n "$BOT_TOKEN" ]; then
-    echo "Deleting Telegram webhook..."
-    curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook" \
-      >/dev/null && echo "Webhook deleted." || echo "WARNING: deleteWebhook failed"
-  fi
-fi
-
 # ── Check DynamoDB for queued wake message ───────────────────────────────────
 WAKE_ITEM=$(aws dynamodb get-item \
   --table-name "$TABLE" \

@@ -78,12 +78,14 @@
     group: "{{ openclaw_user }}"
     mode: "0755"
 
-- name: Configure OpenClaw systemd unit to load environment file
+- name: Configure OpenClaw systemd drop-in (env, wake-greet, webhook)
   ansible.builtin.copy:
     dest: "{{ openclaw_home }}/.config/systemd/user/{{ openclaw_service_name }}.service.d/clawless.conf"
     content: |
       [Service]
       EnvironmentFile={{ openclaw_env_file }}
+      ExecStartPost=-/usr/local/bin/clawless-wake-greet
+      ExecStopPost=-/usr/local/bin/clawless-webhook-set
     owner: "{{ openclaw_user }}"
     group: "{{ openclaw_user }}"
     mode: "0644"
@@ -105,11 +107,3 @@
     group: root
     mode: "0644"
 
-# ── Wake greeting (post-resume proactive message) ────────────────────────────
-- name: Deploy wake-greet systemd unit
-  ansible.builtin.copy:
-    src: clawless-wake-greet.service
-    dest: /etc/systemd/system/clawless-wake-greet.service
-    owner: root
-    group: root
-    mode: "0644"

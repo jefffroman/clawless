@@ -62,6 +62,8 @@ For client-side Ansible changes without rebaking, run `reprovision` on the insta
 
 ## Bake process
 
+Before baking, run `tofu apply` to ensure any new infrastructure (Lambda functions, DynamoDB tables, outputs consumed by the client module) is deployed. The bake script runs `tofu apply` again at the end to register the new snapshot name, but new resources must exist before agents can provision against them.
+
 `bake-snapshot.sh` does the following:
 
 1. Generates an SSH key pair at `~/.ssh/clawless_ansible` if absent, uploads to Lightsail
