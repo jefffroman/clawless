@@ -49,6 +49,14 @@
     - role: common
 
   tasks:
+    - name: Ensure /opt/clawless directory exists
+      ansible.builtin.file:
+        path: /opt/clawless
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - include_role:
         name: searxng
         tasks_from: base
