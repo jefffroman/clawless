@@ -22,7 +22,7 @@ locals {
   bedrock_profile_id = trimprefix(var.bedrock_model, "bedrock/")
 
   tags = merge(var.tags, {
-    Agent = var.agent_slug
+    Agent  = var.agent_slug
     Active = tostring(var.active)
   })
 }
@@ -70,9 +70,9 @@ data "aws_iam_policy_document" "ssm_assume" {
 
 data "aws_iam_policy_document" "bedrock" {
   statement {
-    sid       = "BedrockInvokeModel"
-    effect    = "Allow"
-    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    sid     = "BedrockInvokeModel"
+    effect  = "Allow"
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = concat(
       [data.aws_bedrock_inference_profile.model.inference_profile_arn],
       [for m in data.aws_bedrock_inference_profile.model.models : m.model_arn]
@@ -243,7 +243,7 @@ resource "aws_ssm_activation" "this" {
 
   name               = local.name_prefix
   iam_role           = aws_iam_role.ssm.name
-  registration_limit = 5 # Buffer for instance recreation cycles; each new instance uses one slot
+  registration_limit = 5          # Buffer for instance recreation cycles; each new instance uses one slot
   tags               = local.tags # Propagated to managed instances that register with this activation
 
   depends_on = [aws_iam_role_policy_attachment.ssm_core]
@@ -326,18 +326,18 @@ if [ ! -f /home/ubuntu/.openclaw/.provisioned ]; then
   install -m 0600 /dev/null /opt/clawless/client-vars.json
   base64 -d > /opt/clawless/client-vars.json <<'CLIENTVARS'
 ${base64encode(jsonencode({
-  agent_slug              = var.agent_slug
-  client_name             = var.client_name
-  openclaw_bedrock_region = data.aws_region.current.name
-  openclaw_backup_bucket  = var.backup_bucket
-  bedrock_model           = var.bedrock_model
-  agent_name              = var.agent_name
-  agent_style             = var.agent_style
-  agent_channel           = var.agent_channel
-  channel_config          = var.channel_config
-  iam_role_arn             = aws_iam_role.ssm.arn
-  lifecycle_sfn_arn        = var.lifecycle_sfn_arn
-  wake_messages_table_name = var.wake_messages_table_name
+    agent_slug               = var.agent_slug
+    client_name              = var.client_name
+    openclaw_bedrock_region  = data.aws_region.current.name
+    openclaw_backup_bucket   = var.backup_bucket
+    bedrock_model            = var.bedrock_model
+    agent_name               = var.agent_name
+    agent_style              = var.agent_style
+    agent_channel            = var.agent_channel
+    channel_config           = var.channel_config
+    iam_role_arn             = aws_iam_role.ssm.arn
+    lifecycle_sfn_arn        = var.lifecycle_sfn_arn
+    wake_messages_table_name = var.wake_messages_table_name
 }))}
 CLIENTVARS
   git clone --depth=1 --branch ${var.clawless_version} https://github.com/jefffroman/clawless.git /tmp/clawless-repo
@@ -357,13 +357,13 @@ USERDATA
         --instance-snapshot-name "${local.snapshot_name}" \
         --user-data "file://$_tmpud"
     EOT
-  }
+}
 
-  provisioner "local-exec" {
-    when    = destroy
-    # Fire delete-instance and return — don't hold the tofu lock waiting for Lightsail.
-    # The Lambda (and remove.sh) poll for instance disappearance post-apply.
-    command = <<-EOT
+provisioner "local-exec" {
+  when = destroy
+  # Fire delete-instance and return — don't hold the tofu lock waiting for Lightsail.
+  # The Lambda (and remove.sh) poll for instance disappearance post-apply.
+  command = <<-EOT
       set -e
       for attempt in $(seq 1 12); do
         if aws lightsail delete-instance \
@@ -378,7 +378,7 @@ USERDATA
       echo "ERROR: failed to delete instance ${self.triggers.instance_name} after 12 attempts" >&2
       exit 1
     EOT
-  }
+}
 }
 
 # ── Lightsail Instance Ready Wait ─────────────────────────────────────────────

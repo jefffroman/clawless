@@ -9,7 +9,7 @@ data "archive_file" "snapshot_cleanup" {
   output_path = "${path.module}/.terraform/tmp/snapshot-cleanup.zip"
 
   source {
-    content = <<-PYTHON
+    content  = <<-PYTHON
 import boto3
 from datetime import datetime, timezone, timedelta
 
@@ -102,7 +102,7 @@ resource "aws_lambda_function" "snapshot_cleanup" {
 resource "aws_cloudwatch_event_rule" "snapshot_cleanup" {
   name                = "clawless-snapshot-cleanup-nightly"
   description         = "Nightly golden snapshot cleanup"
-  schedule_expression = "cron(0 6 * * ? *)"  # 06:00 UTC daily
+  schedule_expression = "cron(0 6 * * ? *)" # 06:00 UTC daily
 
   tags = var.tags
 }
