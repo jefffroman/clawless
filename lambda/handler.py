@@ -52,6 +52,8 @@ REGION = os.environ["AWS_DEFAULT_REGION"]
 LIFECYCLE_TABLE = os.environ.get("LIFECYCLE_TABLE", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "clawless")
+BACKUP_BUCKET = os.environ.get("BACKUP_BUCKET", "")
+FARGATE_SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fargate_seed")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 LOCK_RETRY_INTERVAL = 3   # seconds between retries when state lock is held
@@ -124,6 +126,17 @@ def lambda_handler(event, context):
             _fargate_set_desired(slug, 0)
             fargate_slow_handled.add(slug)
     slow_slugs -= fargate_slow_handled
+
+    # ── Step 2c: FARGATE SEED — bootstrap S3 workspace for new agents ──
+    # The gateway entrypoint's sync_down step fails hard if the workspace
+    # prefix is empty, so before tofu creates the ECS service we upload a
+    # baseline openclaw.json. Idempotent via HeadObject check.
+    for slug in fast_slugs:
+        if _provider(agents, slug) != "fargate":
+            continue
+        if _fargate_service_exists(slug):
+            continue  # existing service → not a new add
+        _fargate_seed_workspace(slug)
 
     # ── Step 3: FAST PATH — tofu apply for resumes/adds ────────────────
     if fast_slugs:
@@ -348,6 +361,43 @@ def _fargate_set_desired(slug, count):
     name = _fargate_service_name(slug)
     ecs.update_service(cluster=ECS_CLUSTER, service=name, desiredCount=count)
     print(f"[fargate:{slug}] desired_count={count}")
+
+
+def _fargate_seed_workspace(slug):
+    """Upload baseline seed files to s3://BACKUP_BUCKET/agents/{slug}/workspace/.
+
+    Idempotent: if .openclaw/openclaw.json already exists we leave everything
+    alone (a prior add or a restored workspace is authoritative).
+    """
+    if not BACKUP_BUCKET:
+        print(f"[seed:{slug}] BACKUP_BUCKET not set — skipping")
+        return
+
+    prefix = f"agents/{slug}/workspace"
+    config_key = f"{prefix}/.openclaw/openclaw.json"
+
+    try:
+        s3.head_object(Bucket=BACKUP_BUCKET, Key=config_key)
+        print(f"[seed:{slug}] openclaw.json already present — skipping")
+        return
+    except ClientError as e:
+        if e.response["Error"]["Code"] not in ("404", "NoSuchKey", "NotFound"):
+            raise
+
+    if not os.path.isdir(FARGATE_SEED_DIR):
+        print(f"[seed:{slug}] seed dir missing at {FARGATE_SEED_DIR}")
+        return
+
+    uploaded = 0
+    for root, _dirs, files in os.walk(FARGATE_SEED_DIR):
+        for fname in files:
+            src = os.path.join(root, fname)
+            rel = os.path.relpath(src, FARGATE_SEED_DIR)
+            # Seed files map to .openclaw/<rel> inside the workspace
+            dest_key = f"{prefix}/.openclaw/{rel}"
+            s3.upload_file(src, BACKUP_BUCKET, dest_key)
+            uploaded += 1
+    print(f"[seed:{slug}] uploaded {uploaded} file(s) to s3://{BACKUP_BUCKET}/{prefix}/")
 
 
 # ── Instance stop / start / snapshot ─────────────────────────────────────────

@@ -199,6 +199,7 @@ resource "aws_lambda_function" "lifecycle" {
       LIFECYCLE_TABLE = aws_dynamodb_table.lifecycle_pending.name
       SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
       ECS_CLUSTER     = aws_ecs_cluster.clawless.name
+      BACKUP_BUCKET   = aws_s3_bucket.backups.id
     }
   }
 
