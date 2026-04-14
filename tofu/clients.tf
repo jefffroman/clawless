@@ -48,4 +48,9 @@ locals {
     )
     if length(p.parts) == 5
   }
+
+  # Split agents by provider. Default is lightsail for backwards-compat;
+  # set "provider": "fargate" in the SSM entry to route to the Fargate module.
+  lightsail_agents = { for k, v in local.agents : k => v if try(v.provider, "lightsail") == "lightsail" }
+  fargate_agents   = { for k, v in local.agents : k => v if try(v.provider, "lightsail") == "fargate" }
 }
