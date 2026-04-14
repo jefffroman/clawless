@@ -113,6 +113,14 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Resource = "*"
       },
       {
+        # Fargate dispatch: UpdateService for pause/resume, Describe for existence.
+        # tofu apply during add/remove handles the rest via ecs:*.
+        Sid      = "ECS"
+        Effect   = "Allow"
+        Action   = ["ecs:*", "ec2:*", "application-autoscaling:*"]
+        Resource = "*"
+      },
+      {
         # IAM role and policy management for per-client SSM roles
         Sid      = "IAM"
         Effect   = "Allow"
@@ -190,6 +198,7 @@ resource "aws_lambda_function" "lifecycle" {
       REPO_URL        = "https://github.com/jefffroman/clawless"
       LIFECYCLE_TABLE = aws_dynamodb_table.lifecycle_pending.name
       SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
+      ECS_CLUSTER     = aws_ecs_cluster.clawless.name
     }
   }
 

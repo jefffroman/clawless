@@ -43,6 +43,7 @@ s3 = boto3.client("s3")
 dynamodb = boto3.client("dynamodb")
 sns = boto3.client("sns")
 lightsail = boto3.client("lightsail")
+ecs = boto3.client("ecs")
 sts = boto3.client("sts")
 
 STATE_BUCKET = os.environ["STATE_BUCKET"]
@@ -50,6 +51,7 @@ REPO_URL = os.environ["REPO_URL"]
 REGION = os.environ["AWS_DEFAULT_REGION"]
 LIFECYCLE_TABLE = os.environ.get("LIFECYCLE_TABLE", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "clawless")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
 LOCK_RETRY_INTERVAL = 3   # seconds between retries when state lock is held
@@ -96,6 +98,33 @@ def lambda_handler(event, context):
         else:
             fast_slugs.add(slug)
 
+    # ── Step 2b: FARGATE DISPATCH — pause/resume via ECS API, no tofu ──
+    # Fargate slugs whose ECS service already exists skip the tofu/Lightsail
+    # paths: resume is ecs:UpdateService desired=1, pause is desired=0 (the
+    # entrypoint's SIGTERM handler runs sync-up and exits cleanly).
+    # New fargate slugs (no service yet) still flow through the fast path
+    # to let tofu apply create the service; removed fargate slugs still
+    # flow through the slow path to let tofu destroy clean up.
+    fargate_fast_handled = set()
+    fargate_slow_handled = set()
+
+    for slug in list(fast_slugs):
+        if _provider(agents, slug) == "fargate" and _fargate_service_exists(slug):
+            print(f"[fargate:{slug}] resume via ecs:UpdateService desired=1")
+            _fargate_set_desired(slug, 1)
+            fargate_fast_handled.add(slug)
+    fast_slugs -= fargate_fast_handled
+
+    for slug in list(slow_slugs):
+        # Removed agents (slug no longer in SSM) fall through to tofu destroy.
+        if slug not in agents:
+            continue
+        if _provider(agents, slug) == "fargate" and _fargate_service_exists(slug):
+            print(f"[fargate:{slug}] pause via ecs:UpdateService desired=0")
+            _fargate_set_desired(slug, 0)
+            fargate_slow_handled.add(slug)
+    slow_slugs -= fargate_slow_handled
+
     # ── Step 3: FAST PATH — tofu apply for resumes/adds ────────────────
     if fast_slugs:
         print(f"Fast path (resumes/adds): {sorted(fast_slugs)}")
@@ -103,12 +132,14 @@ def lambda_handler(event, context):
 
         for slug in fast_slugs:
             if slug in agents and agents[slug].get("active", True):
-                _maybe_delete_pause_snapshot(slug)
-                _deregister_managed_instances(slug)
+                if _provider(agents, slug) == "lightsail":
+                    _maybe_delete_pause_snapshot(slug)
+                    _deregister_managed_instances(slug)
 
     # ── Step 4: SLOW PATH — stop, snapshot, destroy ────────────────────
     if slow_slugs:
-        # Stop all instances immediately (agent goes dark in ~5s)
+        # Stop all instances immediately (agent goes dark in ~5s).
+        # Only Lightsail slugs reach here; Fargate pauses were handled above.
         for slug in sorted(slow_slugs):
             _stop_instance(slug)
 
@@ -287,6 +318,36 @@ def _release(slug, grabbed_timestamp):
             print(f"[release:{slug}] deleted unconditionally (will be re-triggered by next event)")
         else:
             raise
+
+
+# ── Provider dispatch + Fargate helpers ──────────────────────────────────────
+
+def _provider(agents, slug):
+    """Return 'fargate' or 'lightsail' (default) for a given agent slug."""
+    cfg = agents.get(slug) or {}
+    return cfg.get("provider", "lightsail")
+
+
+def _fargate_service_name(slug):
+    """Agent slug 'client/agent' → ECS service name 'clawless-client-agent'."""
+    return "clawless-" + slug.replace("/", "-")
+
+
+def _fargate_service_exists(slug):
+    name = _fargate_service_name(slug)
+    try:
+        resp = ecs.describe_services(cluster=ECS_CLUSTER, services=[name])
+    except ClientError as e:
+        print(f"[fargate:{slug}] describe_services failed: {e}")
+        return False
+    services = [s for s in resp.get("services", []) if s.get("status") != "INACTIVE"]
+    return bool(services)
+
+
+def _fargate_set_desired(slug, count):
+    name = _fargate_service_name(slug)
+    ecs.update_service(cluster=ECS_CLUSTER, service=name, desiredCount=count)
+    print(f"[fargate:{slug}] desired_count={count}")
 
 
 # ── Instance stop / start / snapshot ─────────────────────────────────────────
