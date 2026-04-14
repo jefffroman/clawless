@@ -64,11 +64,15 @@ assert_config() {
 }
 
 gateway_pid=""
+searxng_pid=""
 shutdown() {
   log "SIGTERM received"
   if [ -n "$gateway_pid" ] && kill -0 "$gateway_pid" 2>/dev/null; then
     kill -TERM "$gateway_pid" 2>/dev/null || true
     wait "$gateway_pid" 2>/dev/null || true
+  fi
+  if [ -n "$searxng_pid" ] && kill -0 "$searxng_pid" 2>/dev/null; then
+    kill -TERM "$searxng_pid" 2>/dev/null || true
   fi
   sync_up
   log "exiting cleanly"
@@ -79,6 +83,16 @@ trap shutdown TERM INT
 sync_down
 assert_config
 configure-openclaw
+
+log "starting searxng on 127.0.0.1:8080"
+(
+  cd /opt/searxng/searxng-src \
+    && SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml \
+       PYTHONPATH=/opt/searxng/searxng-src \
+       SEARXNG_BIND_ADDRESS=127.0.0.1 \
+       /opt/searxng/venv/bin/python searx/webapp.py
+) >&2 &
+searxng_pid=$!
 
 log "starting openclaw: ${OPENCLAW_CMD}"
 $OPENCLAW_CMD &
