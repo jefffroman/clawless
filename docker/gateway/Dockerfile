@@ -48,19 +48,6 @@ RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
 # and available without a cold download at runtime.
 RUN su openclaw -c '/opt/clawless/memory/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"all-MiniLM-L6-v2\")"'
 
-# SearXNG: self-hosted metasearch at 127.0.0.1:8080. OpenClaw's searxng skill
-# hits /search?format=json. Loopback-only, so the image bakes a random secret.
-RUN mkdir -p /opt/searxng /etc/searxng \
-    && git clone --depth 1 https://github.com/searxng/searxng.git /opt/searxng/searxng-src \
-    && python3 -m venv /opt/searxng/venv \
-    && /opt/searxng/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/searxng/venv/bin/pip install --no-cache-dir \
-         -r /opt/searxng/searxng-src/requirements.txt
-
-COPY ansible/roles/searxng/templates/settings.yml.j2 /etc/searxng/settings.yml
-RUN sed -i "s/{{ searxng_secret_key }}/$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '/+' '_-')/" /etc/searxng/settings.yml \
-    && chown -R openclaw:openclaw /opt/searxng /etc/searxng
-
 COPY docker/gateway/entrypoint.sh /usr/local/bin/clawless-entrypoint
 RUN chmod +x /usr/local/bin/clawless-entrypoint
 

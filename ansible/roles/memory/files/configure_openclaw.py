@@ -40,10 +40,12 @@ MCP_SERVERS = {}
 TOOLS_BLOCK = {"profile": "full"}
 
 # SearXNG connection details — used by the skills.entries.searxng config block.
-# Sandbox containers use bridge networking with extraHosts mapping
-# host.docker.internal → host-gateway, so the container can reach the host.
+# Prefer SEARXNG_URL (full URL, e.g. a Lambda function URL). Fall back to
+# host+port for legacy Lightsail instances where SearXNG runs on the host
+# (sandbox containers use extraHosts mapping host.docker.internal → host-gateway).
 SEARXNG_HOST = os.environ.get("SEARXNG_HOST", "host.docker.internal")
 SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
+SEARXNG_URL_OVERRIDE = os.environ.get("SEARXNG_URL", "").strip()
 
 # Per-peer session isolation: each person who DMs the bot gets their own
 # conversation thread. Safe default given dmPolicy: "open" on the Telegram channel.
@@ -130,8 +132,9 @@ def patch_config():
     defaults["sandbox"].get("docker", {}).pop("user", None)
     print("sandbox patched: mode=all, user=auto")
 
-    # SearXNG skill: enable and set URL so the sandbox container can reach the host.
-    searxng_url = f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
+    # SearXNG skill: enable and set URL. On Fargate, SEARXNG_URL points at a
+    # shared Lambda function URL; on Lightsail it's built from host+port.
+    searxng_url = SEARXNG_URL_OVERRIDE or f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
     skills = config.setdefault("skills", {}).setdefault("entries", {})
     skills["searxng"] = {"enabled": True, "env": {"SEARXNG_URL": searxng_url}}
     print(f"skills.entries.searxng patched: SEARXNG_URL={searxng_url}")
