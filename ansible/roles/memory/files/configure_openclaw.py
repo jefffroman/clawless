@@ -56,25 +56,34 @@ SESSION_BLOCK = {"dmScope": "per-peer"}
 # fixed, we leave docker.user unset and let OpenClaw auto-detect the UID from
 # the workspace owner.
 # Valid modes: "off", "non-main", "all".
-SANDBOX_BLOCK = {
-    "mode": "all",
-    "scope": "agent",
-    "workspaceAccess": "rw",
-    "docker": {
-        "image": "openclaw-sandbox-common:bookworm-slim",
-        "network": "bridge",
-        "env": {
-            "SEARXNG_URL": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
+#
+# On Fargate there is no host Docker daemon available to the gateway, so
+# OPENCLAW_SANDBOX_MODE=off disables the docker block entirely and runs tools
+# in-process. The Fargate task boundary is the isolation.
+SANDBOX_MODE = os.environ.get("OPENCLAW_SANDBOX_MODE", "all").strip().lower()
+
+if SANDBOX_MODE == "off":
+    SANDBOX_BLOCK = {"mode": "off"}
+else:
+    SANDBOX_BLOCK = {
+        "mode": SANDBOX_MODE,
+        "scope": "agent",
+        "workspaceAccess": "rw",
+        "docker": {
+            "image": "openclaw-sandbox-common:bookworm-slim",
+            "network": "bridge",
+            "env": {
+                "SEARXNG_URL": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
+            },
+            "binds": [
+                "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
+            ],
+            "extraHosts": [
+                "host.docker.internal:host-gateway",
+            ],
+            "dangerouslyAllowExternalBindSources": True,
         },
-        "binds": [
-            "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
-        ],
-        "extraHosts": [
-            "host.docker.internal:host-gateway",
-        ],
-        "dangerouslyAllowExternalBindSources": True,
-    },
-}
+    }
 
 
 def patch_config():
