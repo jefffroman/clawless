@@ -78,10 +78,15 @@ resource "aws_cloudwatch_log_group" "task" {
   tags              = var.tags
 }
 
+resource "random_password" "gateway_token" {
+  length  = 48
+  special = false
+}
+
 resource "aws_ssm_parameter" "gateway_token" {
   name  = "/clawless/clients/${var.agent_slug}/gateway_token"
   type  = "SecureString"
-  value = "placeholder-rotate-me"
+  value = random_password.gateway_token.result
 
   lifecycle {
     ignore_changes = [value]
