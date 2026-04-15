@@ -68,13 +68,39 @@ sync_up() {
 }
 
 install_config() {
+  # Installed as openclaw:openclaw so the gateway's startup plugin auto-enable
+  # write can succeed. lock_config() flips it back to root:root 0444 once the
+  # gateway reports healthy. The file lives outside $HOME, so the agent's
+  # file tools can't reach it regardless of perms.
   log "installing baseline config → ${OPENCLAW_CONFIG_PATH}"
-  install -o root -g root -m 0644 "$OPENCLAW_BASELINE_PATH" "$OPENCLAW_CONFIG_PATH"
+  install -o openclaw -g openclaw -m 0644 "$OPENCLAW_BASELINE_PATH" "$OPENCLAW_CONFIG_PATH"
+}
+
+lock_config() {
+  # Wait for the gateway to finish its startup plugin dance, then make the
+  # config file immutable for the rest of the session. Runs in the background
+  # independently of wake_greet so a skipped greet doesn't block the lock.
+  log "lock_config: waiting for gateway health…"
+  local elapsed=0
+  while ! curl -sf "http://127.0.0.1:18789/health" >/dev/null 2>&1; do
+    sleep 3
+    elapsed=$((elapsed + 3))
+    if [ "$elapsed" -ge 120 ]; then
+      log "lock_config: gateway not healthy after 120s — giving up"
+      return 0
+    fi
+  done
+  # Small grace period so any post-ready persistence flush completes.
+  sleep 2
+  chown root:root "$OPENCLAW_CONFIG_PATH" || log "lock_config: chown failed (non-fatal)"
+  chmod 0444 "$OPENCLAW_CONFIG_PATH" || log "lock_config: chmod failed (non-fatal)"
+  log "lock_config: config locked"
 }
 
 wake_greet() {
   # Post-boot proactive message. If a wake message is queued in DynamoDB,
-  # replay it via the openclaw CLI; otherwise send a default greeting.
+  # replay it via the openclaw CLI; otherwise send a default "Hello <name>".
+  # Mirrors the Lightsail clawless-wake-greet.j2 contract.
   # Runs in the background; all failures are non-fatal.
   if [ -z "${WAKE_MESSAGES_TABLE:-}" ]; then
     log "wake-greet: WAKE_MESSAGES_TABLE unset — skipping"
@@ -82,6 +108,23 @@ wake_greet() {
   fi
   if [ -z "${OPENCLAW_CHANNEL:-}" ]; then
     log "wake-greet: OPENCLAW_CHANNEL unset — skipping"
+    return 0
+  fi
+
+  # Peer id comes from OPENCLAW_CHANNEL_CONFIG.allowFrom[0] — same source the
+  # Lightsail script pulled out of SSM. No peer → nothing to deliver to.
+  local peer_id=""
+  if [ -n "${OPENCLAW_CHANNEL_CONFIG:-}" ]; then
+    peer_id=$(printf '%s' "$OPENCLAW_CHANNEL_CONFIG" | python3 -c 'import sys,json
+try:
+    d = json.load(sys.stdin)
+    arr = d.get("allowFrom") or []
+    print(arr[0] if arr else "")
+except Exception:
+    print("")' 2>/dev/null || true)
+  fi
+  if [ -z "$peer_id" ]; then
+    log "wake-greet: no peer id in OPENCLAW_CHANNEL_CONFIG.allowFrom — skipping"
     return 0
   fi
 
@@ -111,11 +154,15 @@ wake_greet() {
     log "wake-greet: replaying queued message"
     aws dynamodb delete-item --table-name "$WAKE_MESSAGES_TABLE" --key "$key" >/dev/null 2>&1 || true
   else
-    msg="(woken up — no queued message)"
+    msg="Hello ${AGENT_NAME:-$AGENT_SLUG}"
     log "wake-greet: sending default greeting"
   fi
 
-  gosu openclaw:openclaw openclaw agent --message "$msg" >/dev/null 2>&1 \
+  gosu openclaw:openclaw openclaw agent \
+      --to "$peer_id" \
+      --message "$msg" \
+      --deliver \
+      --channel "$OPENCLAW_CHANNEL" >/dev/null 2>&1 \
     || log "wake-greet: openclaw agent call failed (non-fatal)"
 }
 
@@ -161,6 +208,7 @@ gosu openclaw:openclaw $OPENCLAW_CMD &
 gateway_pid=$!
 
 wake_greet &
+lock_config &
 memory_reindex_loop &
 reindex_pid=$!
 

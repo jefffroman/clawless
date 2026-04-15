@@ -123,6 +123,7 @@ resource "aws_ecs_task_definition" "gateway" {
 
     environment = [
       { name = "AGENT_SLUG", value = var.agent_slug },
+      { name = "AGENT_NAME", value = var.agent_name != "" ? var.agent_name : local.slug_safe },
       { name = "BACKUP_BUCKET", value = var.backup_bucket },
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "ECS_CLUSTER", value = var.cluster_name },
@@ -133,6 +134,7 @@ resource "aws_ecs_task_definition" "gateway" {
         value = var.channel_config == null ? "" : jsonencode(var.channel_config)
       },
       { name = "WAKE_MESSAGES_TABLE", value = var.wake_messages_table_name },
+      { name = "SEARXNG_URL", value = var.searxng_url },
     ]
 
     secrets = [

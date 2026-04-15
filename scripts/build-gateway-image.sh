@@ -36,11 +36,9 @@ IMAGE_URI="${ECR_REPO_URL}:${TAG}"
 
 echo "Building image: $IMAGE_URI"
 
-if [[ "$NO_PUSH" != "true" ]]; then
-  aws ecr get-login-password --region "$REGION" \
-    | docker login --username AWS --password-stdin \
-        "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-fi
+# Auth is handled by docker-credential-ecr-login via credHelpers in
+# ~/.docker/config.json — no explicit `docker login` needed. The helper
+# fetches fresh creds per push/pull using the ambient AWS profile.
 
 docker build \
   --platform linux/arm64 \

@@ -20,5 +20,6 @@ module "client" {
   security_group_ids       = [aws_security_group.fargate_tasks.id]
   wake_messages_table_name = aws_dynamodb_table.wake_messages.name
   wake_messages_table_arn  = aws_dynamodb_table.wake_messages.arn
+  searxng_url              = aws_lambda_function_url.searxng.function_url
   tags                     = var.tags
 }

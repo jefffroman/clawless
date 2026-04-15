@@ -33,6 +33,12 @@ variable "wake_messages_table_arn" {
   default = ""
 }
 
+variable "searxng_url" {
+  description = "Shared SearXNG Lambda Function URL, injected into the task env so the searxng skill can reach the search backend."
+  type        = string
+  default     = ""
+}
+
 variable "channel_config" {
   type    = any
   default = null
