@@ -57,7 +57,7 @@ resource "aws_route_table_association" "public" {
 # inside the task), unrestricted egress for Bedrock/Telegram/ECR/Logs.
 resource "aws_security_group" "fargate_tasks" {
   name        = "clawless-fargate-tasks"
-  description = "Clawless Fargate gateway tasks — egress only"
+  description = "Clawless Fargate gateway tasks - egress only"
   vpc_id      = aws_vpc.clawless.id
 
   egress {
