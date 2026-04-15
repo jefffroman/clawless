@@ -19,5 +19,4 @@ COPY tofu/providers.tf tofu/.terraform.lock.hcl /opt/tofu-init/
 RUN cd /opt/tofu-init && tofu init -backend=false
 
 COPY lambda/handler.py ${LAMBDA_TASK_ROOT}/
-COPY lambda/fargate_seed/ ${LAMBDA_TASK_ROOT}/fargate_seed/
 CMD ["handler.lambda_handler"]

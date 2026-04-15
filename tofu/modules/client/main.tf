@@ -68,6 +68,14 @@ resource "aws_iam_role_policy" "task" {
         Action   = ["ecs:UpdateService", "ecs:DescribeServices"]
         Resource = "arn:aws:ecs:${var.aws_region}:*:service/${var.cluster_name}/${local.name}"
       },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:DeleteItem",
+        ]
+        Resource = var.wake_messages_table_arn != "" ? var.wake_messages_table_arn : "*"
+      },
     ]
   })
 }
@@ -117,12 +125,14 @@ resource "aws_ecs_task_definition" "gateway" {
       { name = "AGENT_SLUG", value = var.agent_slug },
       { name = "BACKUP_BUCKET", value = var.backup_bucket },
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "ECS_CLUSTER", value = var.cluster_name },
       { name = "OPENCLAW_MODEL", value = var.bedrock_model },
       { name = "OPENCLAW_CHANNEL", value = var.agent_channel },
       {
         name  = "OPENCLAW_CHANNEL_CONFIG"
         value = var.channel_config == null ? "" : jsonencode(var.channel_config)
       },
+      { name = "WAKE_MESSAGES_TABLE", value = var.wake_messages_table_name },
     ]
 
     secrets = [
@@ -165,6 +175,14 @@ resource "aws_ecs_service" "gateway" {
   lifecycle {
     ignore_changes = [desired_count]
   }
+
+  # First boot needs the seed files in place before the task starts or the
+  # entrypoint's sync_down finds an empty prefix and bails. Subsequent applies
+  # no-op on the seed objects (lifecycle ignore_changes) so this is cheap.
+  depends_on = [
+    aws_s3_object.seed_md,
+    aws_s3_object.seed_gitignore,
+  ]
 
   tags = var.tags
 }

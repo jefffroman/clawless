@@ -3,7 +3,7 @@ FROM node:22-slim
 ARG AWSCLI_VERSION=2.17.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip git python3 python3-minimal python3-venv tini \
+      ca-certificates curl unzip git python3 python3-minimal python3-venv tini gosu \
       build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -44,6 +44,25 @@ COPY docker/gateway/files/configure_openclaw.py /usr/local/bin/configure-opencla
 RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
     && chown -R openclaw:openclaw /opt/clawless
 
+# Baseline openclaw.json baked into the image. At boot the entrypoint copies
+# this to /var/lib/openclaw/openclaw.json (root-owned, 0644) and configure-openclaw
+# patches it with per-client env-driven config. Kept out of the agent workspace
+# tree so the agent's file tools don't see or edit it.
+RUN mkdir -p /opt/openclaw /var/lib/openclaw \
+    && chmod 0755 /var/lib/openclaw
+COPY docker/gateway/files/openclaw.baseline.json /opt/openclaw/openclaw.baseline.json
+RUN chown root:root /opt/openclaw/openclaw.baseline.json \
+    && chmod 0644 /opt/openclaw/openclaw.baseline.json
+
+# Clawless-managed skills bundled into openclaw's skill dir.
+# - sleep: self-stop via ecs:UpdateService (task role scoped to own service)
+# - memory-curation: MEMORY.md authoring protocol
+# - searxng: web search via shared Lambda (SEARXNG_URL injected by task def)
+COPY docker/gateway/skills/ /usr/lib/node_modules/openclaw/skills/
+RUN chmod -R a+rX /usr/lib/node_modules/openclaw/skills/sleep \
+                  /usr/lib/node_modules/openclaw/skills/memory-curation \
+                  /usr/lib/node_modules/openclaw/skills/searxng
+
 # Warm the sentence-transformers model cache as openclaw so it's owned correctly
 # and available without a cold download at runtime.
 RUN su openclaw -c '/opt/clawless/memory/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"all-MiniLM-L6-v2\")"'
@@ -51,11 +70,14 @@ RUN su openclaw -c '/opt/clawless/memory/venv/bin/python -c "from sentence_trans
 COPY docker/gateway/entrypoint.sh /usr/local/bin/clawless-entrypoint
 RUN chmod +x /usr/local/bin/clawless-entrypoint
 
-USER openclaw
+# Entrypoint runs as root so it can write a root-owned config file that the
+# openclaw user can read but not modify. It drops to the openclaw user via
+# gosu before exec-ing the gateway process.
 ENV HOME=/home/openclaw
 WORKDIR /home/openclaw
 
-ENV OPENCLAW_CONFIG_PATH=/home/openclaw/.openclaw/openclaw.json \
+ENV OPENCLAW_CONFIG_PATH=/var/lib/openclaw/openclaw.json \
+    OPENCLAW_BASELINE_PATH=/opt/openclaw/openclaw.baseline.json \
     OPENCLAW_SANDBOX_MODE=off \
     WORKSPACE_DIR=/home/openclaw \
     AWS_SDK_LOAD_CONFIG=1

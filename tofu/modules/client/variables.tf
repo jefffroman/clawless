@@ -8,7 +8,27 @@ variable "agent_name" {
   default = ""
 }
 
+variable "client_name" {
+  type    = string
+  default = ""
+}
+
+variable "agent_style" {
+  type    = string
+  default = ""
+}
+
 variable "agent_channel" {
+  type    = string
+  default = ""
+}
+
+variable "wake_messages_table_name" {
+  type    = string
+  default = ""
+}
+
+variable "wake_messages_table_arn" {
   type    = string
   default = ""
 }

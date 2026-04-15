@@ -1,11 +1,13 @@
-import json, shutil, os
-from datetime import datetime
+#!/usr/bin/env python3
+import json, os
 
-# Path can be overridden via environment variable for server deployments
-# where the openclaw user home differs from the provisioning user home.
+# Config lives outside the agent workspace tree (and outside the S3-synced
+# $HOME) so agents can't read or edit it via their file tools. The entrypoint
+# installs a fresh root-owned baseline at this path before each invocation,
+# and configure_openclaw rewrites it in place.
 CONFIG_PATH = os.environ.get(
     "OPENCLAW_CONFIG_PATH",
-    os.path.expanduser("~/.openclaw/openclaw.json")
+    "/var/lib/openclaw/openclaw.json",
 )
 
 # Channel to configure (e.g. "telegram") and its provider-specific config
@@ -91,10 +93,6 @@ else:
 def patch_config():
     with open(CONFIG_PATH) as f:
         config = json.load(f)
-
-    backup = CONFIG_PATH + f".bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    shutil.copy(CONFIG_PATH, backup)
-    print(f"Backed up to {backup}")
 
     defaults = config.setdefault("agents", {}).setdefault("defaults", {})
 
