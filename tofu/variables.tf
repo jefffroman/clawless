@@ -1,25 +1,7 @@
 variable "aws_region" {
-  description = "AWS region for Lightsail and Bedrock resources."
+  description = "AWS region for Fargate and Bedrock resources."
   type        = string
   default     = "us-east-1"
-}
-
-variable "lightsail_availability_zone" {
-  description = "Lightsail availability zone (must be in var.aws_region)."
-  type        = string
-  default     = "us-east-1a"
-}
-
-variable "lightsail_bundle_id" {
-  description = "Lightsail bundle ID — medium_3_0 is the 4GB/2vCPU/$24/mo plan (minimum recommended for OpenClaw)."
-  type        = string
-  default     = "medium_3_0"
-}
-
-variable "lightsail_blueprint_id" {
-  description = "Lightsail blueprint ID for OpenClaw. Verify exact ID in the AWS Lightsail console — it evolves with OpenClaw releases."
-  type        = string
-  default     = "openclaw_ls_1_0"
 }
 
 variable "alert_email" {
@@ -31,19 +13,6 @@ variable "bedrock_monthly_budget_usd" {
   description = "Monthly Bedrock spend threshold in USD. Alerts fire at 80% and 100%."
   type        = number
   default     = 50
-}
-
-
-variable "golden_snapshot_name" {
-  description = "Lightsail snapshot name to use for new client instances instead of the blueprint. Set by bake-snapshot.sh after a successful golden bake. Empty string means fall back to blueprint_id."
-  type        = string
-  default     = ""
-}
-
-variable "new_agent_slugs" {
-  description = "Slugs of agents being provisioned for the first time. Passed by the lifecycle Lambda at apply time; never set in tfvars. Causes the module to use the golden snapshot (or blueprint) rather than expecting a pause snapshot."
-  type        = set(string)
-  default     = []
 }
 
 variable "replica_region" {

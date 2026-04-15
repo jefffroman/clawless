@@ -1,6 +1,7 @@
 # ── Shared backup bucket ──────────────────────────────────────────────────────
-# Active clients sync their workspace here hourly (clients/{slug}/workspace/).
-# When a client is removed, the Lambda copies its data here before destroying it.
+# Fargate gateway tasks sync their workspace here on SIGTERM and restore on boot
+# (agents/{slug}/workspace/). When a client is removed, the Lambda archives the
+# data under removed/{slug}/{date}/ before destroying the prefix.
 # Lifecycle: 3 rotating versions — current kept indefinitely, 2 noncurrent kept ≥7 days.
 
 resource "aws_s3_bucket" "backups" {

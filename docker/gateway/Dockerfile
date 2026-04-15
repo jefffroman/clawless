@@ -37,10 +37,10 @@ RUN mkdir -p /opt/clawless/memory /opt/clawless/bin \
     && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
          chromadb sentence-transformers networkx rank-bm25
 
-COPY ansible/roles/memory/files/indexer.py /opt/clawless/bin/indexer.py
-COPY ansible/roles/memory/files/search.py /opt/clawless/bin/search.py
-COPY ansible/roles/memory/files/auto_retrieve.py /opt/clawless/bin/auto_retrieve.py
-COPY ansible/roles/memory/files/configure_openclaw.py /usr/local/bin/configure-openclaw
+COPY docker/gateway/files/indexer.py /opt/clawless/bin/indexer.py
+COPY docker/gateway/files/search.py /opt/clawless/bin/search.py
+COPY docker/gateway/files/auto_retrieve.py /opt/clawless/bin/auto_retrieve.py
+COPY docker/gateway/files/configure_openclaw.py /usr/local/bin/configure-openclaw
 RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
     && chown -R openclaw:openclaw /opt/clawless
 

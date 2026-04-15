@@ -1,5 +1,0 @@
----
-# Convenience shim: runs both base and client tasks.
-# provision-base.yml and provision-client.yml use tasks_from: base/client directly.
-- include_tasks: base.yml
-- include_tasks: client.yml

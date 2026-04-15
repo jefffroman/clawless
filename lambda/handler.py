@@ -1,28 +1,27 @@
 """
-Clawless lifecycle Lambda.
+Clawless lifecycle Lambda (Fargate).
 
-Triggered by Step Functions on lifecycle changes.  Scripts and the UI invoke SFN
+Triggered by Step Functions on lifecycle changes. Scripts and the UI invoke SFN
 directly; SFN handles the SSM write, writes a pending record to DynamoDB (one per
 slug, last-write-wins), and invokes the Lambda only if no other Lambda already owns
 that slug.
 
 The Lambda atomically grabs unowned records by setting in_progress=true (conditional
-on false).  One Lambda owns each slug until done — no cross-Lambda coordination.
+on false). One Lambda owns each slug until done — no cross-Lambda coordination.
 
-Processing loop prioritises resumes/adds (fast path) over pauses/removals
-(slow path).  Pauses and removals are stopped immediately so the agent goes
-dark within seconds, but the tofu destroy is batched at the end.
+Lifecycle transitions:
+  - Add agent:    seed S3 workspace, tofu apply (creates ECS service desired=1)
+  - Remove agent: archive S3 prefix, tofu destroy the ECS service
+  - Pause agent:  ecs:UpdateService desired=0 (SIGTERM → container sync-up)
+  - Resume agent: ecs:UpdateService desired=1 (container boots, sync-down)
 
-Handles all lifecycle transitions:
-  - Add agent    (new path in /clawless/clients/{client}/{agent})
-  - Remove agent (path deleted from SSM)
-  - Pause agent  (active: false) — stops instance, snapshots, then destroys
-  - Resume agent (active: true)  — creates from snapshot, deletes pause snapshot
+Pause/resume are pure ECS API calls — no tofu apply involved — so they're
+fast and cheap. Only adds and removes touch tofu.
 
 Failure handling:
   - State lock contention: retry 15 times at 3s intervals (45s max).
   - Single-slug failure: taint partial state, write /error to SSM, exclude slug,
-    retry remaining slugs.  SNS alert for every failure.
+    retry remaining slugs. SNS alert for every failure.
   - Mass failure (>1 slug or systemic): stop, alert, let operator investigate.
 """
 
@@ -42,9 +41,7 @@ ssm = boto3.client("ssm")
 s3 = boto3.client("s3")
 dynamodb = boto3.client("dynamodb")
 sns = boto3.client("sns")
-lightsail = boto3.client("lightsail")
 ecs = boto3.client("ecs")
-sts = boto3.client("sts")
 
 STATE_BUCKET = os.environ["STATE_BUCKET"]
 REPO_URL = os.environ["REPO_URL"]
@@ -52,7 +49,7 @@ REGION = os.environ["AWS_DEFAULT_REGION"]
 LIFECYCLE_TABLE = os.environ.get("LIFECYCLE_TABLE", "")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "clawless")
-BACKUP_BUCKET = os.environ.get("BACKUP_BUCKET", "")
+BACKUP_BUCKET = os.environ["BACKUP_BUCKET"]
 FARGATE_SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fargate_seed")
 PLUGIN_CACHE_DIR = "/opt/tofu-plugin-cache"
 
@@ -100,109 +97,45 @@ def lambda_handler(event, context):
         else:
             fast_slugs.add(slug)
 
-    # ── Step 2b: FARGATE DISPATCH — pause/resume via ECS API, no tofu ──
-    # Fargate slugs whose ECS service already exists skip the tofu/Lightsail
-    # paths: resume is ecs:UpdateService desired=1, pause is desired=0 (the
-    # entrypoint's SIGTERM handler runs sync-up and exits cleanly).
-    # New fargate slugs (no service yet) still flow through the fast path
-    # to let tofu apply create the service; removed fargate slugs still
-    # flow through the slow path to let tofu destroy clean up.
-    fargate_fast_handled = set()
-    fargate_slow_handled = set()
-
+    # ── Step 2b: PAUSE/RESUME DISPATCH — ECS API only, no tofu ────────
+    # For existing services: resume is desired=1, pause is desired=0.
+    # Container SIGTERM handler runs sync-up on stop; sync-down on next boot.
     for slug in list(fast_slugs):
-        if _provider(agents, slug) == "fargate" and _fargate_service_exists(slug):
+        if _fargate_service_exists(slug):
             print(f"[fargate:{slug}] resume via ecs:UpdateService desired=1")
             _fargate_set_desired(slug, 1)
-            fargate_fast_handled.add(slug)
-    fast_slugs -= fargate_fast_handled
+            fast_slugs.discard(slug)
 
     for slug in list(slow_slugs):
-        # Removed agents (slug no longer in SSM) fall through to tofu destroy.
-        if slug not in agents:
-            continue
-        if _provider(agents, slug) == "fargate" and _fargate_service_exists(slug):
+        if slug in agents and _fargate_service_exists(slug):
+            # Pure pause: scale to 0 and we're done (no tofu destroy).
             print(f"[fargate:{slug}] pause via ecs:UpdateService desired=0")
             _fargate_set_desired(slug, 0)
-            fargate_slow_handled.add(slug)
-    slow_slugs -= fargate_slow_handled
+            slow_slugs.discard(slug)
+        elif slug not in agents and _fargate_service_exists(slug):
+            # Removal: stop the task now so it doesn't process events while
+            # we archive and tofu destroys. Keep in slow_slugs for tofu.
+            print(f"[fargate:{slug}] remove — scaling to 0 before tofu destroy")
+            _fargate_set_desired(slug, 0)
 
-    # ── Step 2c: FARGATE SEED — bootstrap S3 workspace for new agents ──
+    # ── Step 2c: SEED — bootstrap S3 workspace for new adds ───────────
     # The gateway entrypoint's sync_down step fails hard if the workspace
     # prefix is empty, so before tofu creates the ECS service we upload a
     # baseline openclaw.json. Idempotent via HeadObject check.
     for slug in fast_slugs:
-        if _provider(agents, slug) != "fargate":
-            continue
-        if _fargate_service_exists(slug):
-            continue  # existing service → not a new add
         _fargate_seed_workspace(slug)
 
-    # ── Step 3: FAST PATH — tofu apply for resumes/adds ────────────────
+    # ── Step 3: FAST PATH — tofu apply for new adds ───────────────────
     if fast_slugs:
-        print(f"Fast path (resumes/adds): {sorted(fast_slugs)}")
+        print(f"Fast path (new adds): {sorted(fast_slugs)}")
         _apply_with_retry(version, agents, fast_slugs, errored_slugs)
 
-        for slug in fast_slugs:
-            if slug in agents and agents[slug].get("active", True):
-                if _provider(agents, slug) == "lightsail":
-                    _maybe_delete_pause_snapshot(slug)
-                    _deregister_managed_instances(slug)
-
-    # ── Step 4: SLOW PATH — stop, snapshot, destroy ────────────────────
+    # ── Step 4: SLOW PATH — tofu destroy for removals ─────────────────
     if slow_slugs:
-        # Stop all instances immediately (agent goes dark in ~5s).
-        # Only Lightsail slugs reach here; Fargate pauses were handled above.
-        for slug in sorted(slow_slugs):
-            _stop_instance(slug)
-
-        # Start snapshots for pauses (not removals)
-        pending_snapshots = {}
-        pause_slugs = {s for s in slow_slugs if s in agents}
-        for slug in sorted(pause_slugs):
-            snap_name = _start_snapshot(slug)
-            if snap_name:
-                pending_snapshots[snap_name] = slug
-
-        # Wait for snapshots, checking for intent changes during polling
-        abandoned = set()
-        if pending_snapshots:
-            abandoned = _wait_for_snapshots(pending_snapshots, grabbed)
-
-        # Slugs abandoned mid-snapshot (intent changed to resume):
-        # instance was stopped but never destroyed (tofu state intact),
-        # so just restart it — no tofu apply needed.
-        if abandoned:
-            print(f"Abandoned pauses (intent changed): {sorted(abandoned)}")
-            for slug in abandoned:
-                _start_instance(slug)
-                slow_slugs.discard(slug)
-
-        # Destroy remaining slow slugs
-        destroy_slugs = slow_slugs - abandoned
-        if destroy_slugs:
-            print(f"Slow path (pauses/removals): {sorted(destroy_slugs)}")
-            agents = _get_agents()
-            errored_slugs = {slug for slug, cfg in agents.items() if cfg.get("_error")}
-            _apply_with_retry(version, agents, destroy_slugs, errored_slugs)
-
-            # Post-destroy: check intent changed during tofu apply
-            for slug in list(destroy_slugs):
-                if _intent_changed(slug, grabbed[slug]["timestamp"]):
-                    print(f"[release:{slug}] intent changed during destroy — re-checking")
-                    agents = _get_agents()
-                    if slug in agents and agents[slug].get("active", True):
-                        print(f"[release:{slug}] now active — recreating via fast path")
-                        errored_slugs = {s for s, c in agents.items() if c.get("_error")}
-                        _apply_with_retry(version, agents, {slug}, errored_slugs)
-                        _maybe_delete_pause_snapshot(slug)
-                        _deregister_managed_instances(slug)
-
-            # Wait for destroyed instances to disappear, then clean up MIs
-            for slug in destroy_slugs:
-                if not _intent_changed(slug, grabbed[slug]["timestamp"]):
-                    _wait_for_instance_gone(slug)
-                    _deregister_managed_instances(slug, require_online=False)
+        print(f"Slow path (removals): {sorted(slow_slugs)}")
+        agents = _get_agents()
+        errored_slugs = {slug for slug, cfg in agents.items() if cfg.get("_error")}
+        _apply_with_retry(version, agents, slow_slugs, errored_slugs)
 
     # ── Step 5: RELEASE — conditional delete for each owned slug ───────
     for slug, info in grabbed.items():
@@ -333,13 +266,7 @@ def _release(slug, grabbed_timestamp):
             raise
 
 
-# ── Provider dispatch + Fargate helpers ──────────────────────────────────────
-
-def _provider(agents, slug):
-    """Return 'fargate' or 'lightsail' (default) for a given agent slug."""
-    cfg = agents.get(slug) or {}
-    return cfg.get("provider", "lightsail")
-
+# ── Fargate helpers ──────────────────────────────────────────────────────────
 
 def _fargate_service_name(slug):
     """Agent slug 'client/agent' → ECS service name 'clawless-client-agent'."""
@@ -399,154 +326,6 @@ def _fargate_seed_workspace(slug):
             uploaded += 1
     print(f"[seed:{slug}] uploaded {uploaded} file(s) to s3://{BACKUP_BUCKET}/{prefix}/")
 
-
-# ── Instance stop / start / snapshot ─────────────────────────────────────────
-
-def _stop_instance(agent_path):
-    """Stop a Lightsail instance immediately. Makes agent unavailable fast."""
-    slug = _resource_slug(agent_path)
-    instance_name = f"clawless-{slug}"
-
-    try:
-        resp = lightsail.get_instance(instanceName=instance_name)
-        state = resp["instance"]["state"]["name"]
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NotFoundException":
-            print(f"[stop:{slug}] instance not found — nothing to stop")
-            return
-        raise
-
-    if state == "stopped":
-        print(f"[stop:{slug}] already stopped")
-        return
-
-    if state != "running":
-        print(f"[stop:{slug}] instance state '{state}' — skipping stop")
-        return
-
-    print(f"[stop:{slug}] stopping instance...")
-    lightsail.stop_instance(instanceName=instance_name)
-    print(f"[stop:{slug}] stop requested")
-
-
-def _start_instance(agent_path):
-    """Start a stopped Lightsail instance (used when a resume cancels a pending pause)."""
-    slug = _resource_slug(agent_path)
-    instance_name = f"clawless-{slug}"
-
-    try:
-        resp = lightsail.get_instance(instanceName=instance_name)
-        state = resp["instance"]["state"]["name"]
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NotFoundException":
-            print(f"[start:{slug}] instance not found — nothing to start")
-            return
-        raise
-
-    if state == "running":
-        print(f"[start:{slug}] already running")
-        return
-
-    if state not in ("stopped", "stopping"):
-        print(f"[start:{slug}] instance state '{state}' — skipping start")
-        return
-
-    print(f"[start:{slug}] starting instance...")
-    lightsail.start_instance(instanceName=instance_name)
-    print(f"[start:{slug}] start requested")
-
-
-def _start_snapshot(agent_path):
-    """Kick off a snapshot for a pause (non-blocking). Returns snapshot name or None."""
-    slug = _resource_slug(agent_path)
-    instance_name = f"clawless-{slug}"
-    snapshot_name = f"clawless-{slug}-snap"
-
-    try:
-        lightsail.get_instance(instanceName=instance_name)
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NotFoundException":
-            print(f"[snapshot:{slug}] instance not found — nothing to snapshot")
-            return None
-        raise
-
-    # Check if snapshot already exists
-    try:
-        snap = lightsail.get_instance_snapshot(instanceSnapshotName=snapshot_name)
-        snap_state = snap["instanceSnapshot"]["state"]
-        if snap_state in ("available", "pending"):
-            print(f"[snapshot:{slug}] snapshot already {snap_state}")
-            return snapshot_name if snap_state == "pending" else None
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "NotFoundException":
-            raise
-
-    # Wait for instance to be stopped (stop_instance is async)
-    for i in range(30):
-        inst = lightsail.get_instance(instanceName=instance_name)
-        state = inst["instance"]["state"]["name"]
-        if state == "stopped":
-            break
-        if state not in ("stopping", "running"):
-            print(f"[snapshot:{slug}] unexpected state '{state}' — skipping snapshot")
-            return None
-        time.sleep(2)
-    else:
-        print(f"[snapshot:{slug}] timed out waiting for stopped state — skipping snapshot")
-        return None
-
-    print(f"[snapshot:{slug}] creating snapshot {snapshot_name} (non-blocking)...")
-    lightsail.create_instance_snapshot(
-        instanceName=instance_name,
-        instanceSnapshotName=snapshot_name,
-    )
-    return snapshot_name
-
-
-def _wait_for_snapshots(snapshot_map, grabbed):
-    """Poll until all snapshots are available or their intent changes.
-
-    snapshot_map: {snapshot_name: slug}
-    grabbed: {slug: {timestamp, pending}} — used to detect intent changes
-
-    Returns set of slugs whose intent changed (abandoned — should be moved
-    to fast path instead of destroyed).
-    """
-    if not snapshot_map:
-        return set()
-
-    print(f"Waiting for {len(snapshot_map)} snapshot(s): {list(snapshot_map.keys())}")
-    remaining = dict(snapshot_map)
-    abandoned = set()
-
-    while remaining:
-        for snap_name, slug in list(remaining.items()):
-            # Check if intent changed (new event arrived for this slug)
-            if _intent_changed(slug, grabbed[slug]["timestamp"]):
-                print(f"[snapshot] {snap_name} — intent changed for {slug}, abandoning")
-                remaining.pop(snap_name)
-                abandoned.add(slug)
-                continue
-
-            try:
-                snap = lightsail.get_instance_snapshot(instanceSnapshotName=snap_name)
-                state = snap["instanceSnapshot"]["state"]
-                if state == "available":
-                    print(f"[snapshot] {snap_name} ready")
-                    remaining.pop(snap_name)
-                elif state == "error":
-                    print(f"[snapshot] WARNING: {snap_name} failed")
-                    remaining.pop(snap_name)
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "NotFoundException":
-                    print(f"[snapshot] WARNING: {snap_name} not found")
-                    remaining.pop(snap_name)
-                else:
-                    raise
-        if remaining:
-            time.sleep(10)
-
-    return abandoned
 
 
 # ── SSM agent config ─────────────────────────────────────────────────────────
@@ -640,7 +419,7 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
         f.write(f'bucket = "{STATE_BUCKET}"\n')
         f.write(f'region = "{REGION}"\n')
 
-    # Download tfvars from S3 (uploaded by bootstrap and bake-snapshot)
+    # Download tfvars from S3 (uploaded by bootstrap.sh)
     s3.download_file(
         STATE_BUCKET,
         "config/terraform.tfvars",
@@ -668,14 +447,8 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
 
     if removed_slugs:
         print(f"Detected removed agents: {sorted(removed_slugs)}")
-        account_id = sts.get_caller_identity()["Account"]
         for slug in sorted(removed_slugs):
-            _backup_agent_to_shared(slug, account_id)
-        _patch_force_destroy(tofu_dir)
-
-    # Agents in SSM but not yet in state are brand new — use golden snapshot.
-    new_slugs = ssm_slugs - state_slugs
-    new_slugs_var = f"-var=new_agent_slugs={json.dumps(sorted(new_slugs))}"
+            _archive_agent_prefix(slug)
 
     # Determine which slugs to apply
     all_slugs = ssm_slugs | removed_slugs
@@ -699,15 +472,15 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
     target_args = [f'-target=module.client["{slug}"]' for slug in sorted(apply_slugs)]
     try:
         _run(
-            ["tofu", "apply", "-auto-approve", "-input=false", new_slugs_var] + target_args,
+            ["tofu", "apply", "-auto-approve", "-input=false"] + target_args,
             cwd=tofu_dir,
             env=env,
         )
     except subprocess.CalledProcessError as e:
-        _handle_apply_failure(e, apply_slugs, tofu_dir, env, new_slugs_var)
+        _handle_apply_failure(e, apply_slugs, tofu_dir, env)
 
 
-def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
+def _handle_apply_failure(error, apply_slugs, tofu_dir, env):
     """Handle a failed batched tofu apply.
 
     State lock contention raises StateLockError for the retry loop.
@@ -722,7 +495,7 @@ def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
         raise StateLockError("tofu state lock held by another invocation")
 
     # Parse failed slugs from tofu error output
-    # Tofu errors reference resources like: module.client["test/tess"].aws_lightsail_...
+    # Tofu errors reference resources like: module.client["test/tess"].aws_ecs_service...
     # Only match slugs on error lines, not warnings
     failed_slugs = set()
     for line in output.splitlines():
@@ -769,7 +542,7 @@ def _handle_apply_failure(error, apply_slugs, tofu_dir, env, new_slugs_var):
         target_args = [f'-target=module.client["{slug}"]' for slug in sorted(remaining)]
         try:
             _run(
-                ["tofu", "apply", "-auto-approve", "-input=false", new_slugs_var] + target_args,
+                ["tofu", "apply", "-auto-approve", "-input=false"] + target_args,
                 cwd=tofu_dir,
                 env=env,
             )
@@ -840,133 +613,30 @@ def _send_alert(subject, message):
 
 # ── Helper functions ─────────────────────────────────────────────────────────
 
-def _wait_for_instance_gone(agent_path, max_wait=300):
-    """Poll until a Lightsail instance no longer exists (deleted by tofu)."""
-    slug = _resource_slug(agent_path)
-    instance_name = f"clawless-{slug}"
-    for i in range(max_wait // 5):
-        try:
-            lightsail.get_instance(instanceName=instance_name)
-            time.sleep(5)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NotFoundException":
-                print(f"[cleanup:{slug}] instance gone")
-                return
-            raise
-    print(f"WARNING: instance {instance_name} still exists after {max_wait}s")
+def _archive_agent_prefix(slug):
+    """Archive a removed agent's workspace in-place in the shared backup bucket.
 
-
-def _resource_slug(agent_path):
-    """Convert 'client/agent' path to 'client-agent' for AWS resource names."""
-    return agent_path.replace("/", "-")
-
-
-def _maybe_delete_pause_snapshot(agent_path):
-    """Delete clawless-{slug}-snap after a successful resume (idempotent)."""
-    slug = _resource_slug(agent_path)
-    snapshot_name = f"clawless-{slug}-snap"
-
-    try:
-        lightsail.get_instance_snapshot(instanceSnapshotName=snapshot_name)
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NotFoundException":
-            return
-        raise
-
-    print(f"[resume:{slug}] deleting pause snapshot {snapshot_name}...")
-    try:
-        lightsail.delete_instance_snapshot(instanceSnapshotName=snapshot_name)
-        print(f"[resume:{slug}] snapshot deleted")
-    except ClientError as e:
-        print(f"[resume:{slug}] WARNING: snapshot delete failed: {e}")
-
-
-def _deregister_managed_instances(agent_path, require_online=True):
-    """Deregister managed instances for this agent's IAM role.
-
-    Each pause/resume cycle creates a new MI ID, leaving the previous one
-    orphaned in SSM.
-
-    require_online=True (resume fast path): only deregister offline instances,
-      and only if at least one is Online — avoids racing with a freshly booting
-      instance that hasn't sent its first ping yet.
-    require_online=False (pause/remove slow path): deregister all instances
-      unconditionally — the Lightsail instance is destroyed so all MIs will be
-      ConnectionLost.
+    Copies agents/{slug}/* → removed/{slug}/{date}/* inside BACKUP_BUCKET, then
+    deletes the original prefix so tofu destroy doesn't trip over it. Idempotent:
+    if the source prefix is empty we skip silently.
     """
-    slug = _resource_slug(agent_path)
-    role_name = f"clawless-{slug}-ssm"
+    src_prefix = f"agents/{slug}/"
+    dst_prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
+    print(f"[remove:{slug}] archiving {src_prefix} → {dst_prefix} in {BACKUP_BUCKET}")
 
-    all_instances = []
-    paginator = ssm.get_paginator("describe_instance_information")
-    for page in paginator.paginate(Filters=[{"Key": "IamRole", "Values": [role_name]}]):
-        all_instances.extend(page["InstanceInformationList"])
-
-    if require_online:
-        online  = [i for i in all_instances if i["PingStatus"] == "Online"]
-        targets = [i for i in all_instances if i["PingStatus"] != "Online"]
-        if not online:
-            print(f"[cleanup:{slug}] no online instance yet — skipping orphan deregistration")
-            return
-    else:
-        targets = all_instances
-
-    if not targets:
-        return
-
-    print(f"[cleanup:{slug}] deregistering {len(targets)} managed instance(s)")
-    for instance in targets:
-        mi_id = instance["InstanceId"]
-        try:
-            ssm.deregister_managed_instance(InstanceId=mi_id)
-        except ClientError as e:
-            print(f"[cleanup:{slug}] WARNING: failed to deregister {mi_id}: {e}")
-
-
-def _backup_agent_to_shared(agent_path, account_id):
-    """Copy all objects from the agent backup prefix into the shared archive bucket."""
-    slug = _resource_slug(agent_path)
-    src_bucket = f"clawless-{slug}-backup-{account_id}"
-    dst_bucket = f"clawless-backups-{account_id}"
-    prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
-    _copy_s3_prefix(src_bucket, dst_bucket, prefix, f"remove:{slug}")
-
-
-def _copy_s3_prefix(src_bucket, dst_bucket, dst_prefix, label):
-    """Copy all objects from src_bucket into dst_bucket under dst_prefix."""
-    print(f"[{label}] {src_bucket} -> {dst_bucket}/{dst_prefix}")
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        count = 0
-        for page in paginator.paginate(Bucket=src_bucket):
-            for obj in page.get("Contents", []):
-                s3.copy_object(
-                    CopySource={"Bucket": src_bucket, "Key": obj["Key"]},
-                    Bucket=dst_bucket,
-                    Key=dst_prefix + obj["Key"],
-                )
-                count += 1
-        print(f"[{label}] copied {count} objects")
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NoSuchBucket":
-            print(f"[{label}] WARNING: {src_bucket} not found — skipping")
-        else:
-            raise
-
-
-def _patch_force_destroy(tofu_dir):
-    """Add force_destroy = true to all aws_s3_bucket resources in the client module."""
-    path = os.path.join(tofu_dir, "modules", "client", "main.tf")
-    with open(path) as f:
-        content = f.read()
-    patched = re.sub(
-        r'(resource "aws_s3_bucket" "[^"]*" \{)',
-        r'\1\n  force_destroy = true',
-        content,
-    )
-    with open(path, "w") as f:
-        f.write(patched)
-    print(f"[remove] patched force_destroy=true into client module")
+    paginator = s3.get_paginator("list_objects_v2")
+    count = 0
+    for page in paginator.paginate(Bucket=BACKUP_BUCKET, Prefix=src_prefix):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(src_prefix):]
+            s3.copy_object(
+                CopySource={"Bucket": BACKUP_BUCKET, "Key": obj["Key"]},
+                Bucket=BACKUP_BUCKET,
+                Key=dst_prefix + rel,
+            )
+            s3.delete_object(Bucket=BACKUP_BUCKET, Key=obj["Key"])
+            count += 1
+    print(f"[remove:{slug}] archived {count} object(s)")
 
 
 def _parse_state_slugs(output):

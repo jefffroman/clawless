@@ -107,12 +107,6 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Resource = "*"
       },
       {
-        Sid      = "Lightsail"
-        Effect   = "Allow"
-        Action   = ["lightsail:*"]
-        Resource = "*"
-      },
-      {
         # Fargate dispatch: UpdateService for pause/resume, Describe for existence.
         # tofu apply during add/remove handles the rest via ecs:*.
         Sid      = "ECS"
