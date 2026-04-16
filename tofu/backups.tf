@@ -90,6 +90,29 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "backup_replica" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "backup_replica" {
+  provider = aws.replica
+  bucket   = aws_s3_bucket.backup_replica.id
+
+  rule {
+    id     = "rotate-replica"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    noncurrent_version_expiration {
+      newer_noncurrent_versions = 1
+      noncurrent_days           = 3
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.backup_replica]
+}
+
 # ── CRR IAM Role ──────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "backup_replication" {
