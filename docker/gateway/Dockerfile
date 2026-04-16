@@ -63,7 +63,7 @@ RUN chown root:root /opt/openclaw/openclaw.baseline.json \
     && chmod 0644 /opt/openclaw/openclaw.baseline.json
 
 # Clawless-managed skills bundled into openclaw's skill dir.
-# - sleep: self-stop via ecs:UpdateService (task role scoped to own service)
+# - sleep: self-pause via lifecycle SFN (sets /active=false, triggers Lambda)
 # - memory-curation: MEMORY.md authoring protocol
 # - searxng: web search via shared Lambda (SEARXNG_URL injected by task def)
 COPY docker/gateway/skills/ /usr/local/lib/node_modules/openclaw/skills/
