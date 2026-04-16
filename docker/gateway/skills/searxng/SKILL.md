@@ -1,15 +1,6 @@
 ---
 name: searxng
-description: Privacy-respecting metasearch using your local SearXNG instance. Search the web, images, news, and more without external API dependencies.
-author: Avinash Venkatswamy
-version: 1.0.2-revised
-homepage: https://searxng.org
-triggers:
-  - "search for"
-  - "search web"
-  - "find information"
-  - "look up"
-metadata: {"clawdbot":{"emoji":"🔍","requires":{"bins":["uv","python3"]},"config":{"env":{"SEARXNG_URL":{"description":"SearXNG instance URL","default":"http://localhost:8080","required":true}}}}}
+description: Search the web for a topic via a privacy-respecting SearXNG instance. Use when you need to discover pages, news, images, or sources for a query — not when you already have a URL (use web_fetch for that).
 ---
 
 # SearXNG Search
@@ -20,7 +11,7 @@ Search the web using your local SearXNG instance - a privacy-respecting metasear
 
 1. `uv` (Python package manager) - located at `/usr/local/bin/uv`
 2. `python3` - located at `/usr/bin/python3`
-3. A running SearXNG instance (local, accessible via `SEARXNG_URL`)
+3. `SEARXNG_URL` env var pointing at the shared SearXNG Lambda Function URL (injected by the task def — no manual setup)
 
 ## Quick Start
 
@@ -50,9 +41,7 @@ Always use `/usr/local/bin/uv` because the sandbox executor may not inherit your
 
 ## Configuration
 
-The `SEARXNG_URL` environment variable points to your SearXNG instance. This is pre-configured in the sandbox environment — no manual setup needed.
-
-Default: `http://localhost:8080`
+`SEARXNG_URL` is pre-set in the container env by the task definition and points at the shared SearXNG Lambda Function URL. Do not override it.
 
 ## Available Categories
 
@@ -72,10 +61,8 @@ Default: `http://localhost:8080`
 Always use the full path: `/usr/local/bin/uv run ...`
 
 ### Connection to SearXNG fails
-1. Verify SearXNG is running: `curl http://localhost:8080`
-2. Check `$SEARXNG_URL` is set correctly
-3. The instance binds to loopback only — it must be accessed from the same host
+1. Check `$SEARXNG_URL` is set — it should be injected by the task definition
+2. Probe the endpoint directly: `curl -sf "$SEARXNG_URL/search?q=test&format=json"`
 
 ### No results returned
-1. Try a different category or simpler query
-2. Check that search engines are enabled in SearXNG settings (`/opt/searxng/etc/settings.yml`)
+Try a different category or a simpler query.

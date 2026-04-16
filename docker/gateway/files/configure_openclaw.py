@@ -77,10 +77,10 @@ else:
             "image": "openclaw-sandbox-common:bookworm-slim",
             "network": "bridge",
             "env": {
-                "SEARXNG_URL": f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
+                "SEARXNG_URL": SEARXNG_URL_OVERRIDE or f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
             },
             "binds": [
-                "/usr/lib/node_modules/openclaw/skills:/usr/lib/node_modules/openclaw/skills:ro",
+                "/usr/local/lib/node_modules/openclaw/skills:/usr/local/lib/node_modules/openclaw/skills:ro",
             ],
             "extraHosts": [
                 "host.docker.internal:host-gateway",

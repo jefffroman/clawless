@@ -52,7 +52,8 @@ sync_down() {
   # override the root-owned file we install next.
   aws s3 sync "$BACKUP_URI" "$WORKSPACE_DIR/" --no-progress \
     --exclude '.openclaw/openclaw.json' \
-    --exclude '.openclaw/openclaw.json.bak*'
+    --exclude '.openclaw/openclaw.json.bak*' \
+    --exclude '.aws/*'
   chown -R openclaw:openclaw "$WORKSPACE_DIR"
 }
 
@@ -64,7 +65,37 @@ sync_up() {
     --exclude 'vector_memory/__pycache__/*' \
     --exclude '.openclaw/openclaw.json' \
     --exclude '.openclaw/openclaw.json.bak*' \
-    --exclude '.openclaw/agents/*/sessions/*.lock' || log "sync-up failed (non-fatal)"
+    --exclude '.openclaw/agents/*/sessions/*.lock' \
+    --exclude '.aws/*' || log "sync-up failed (non-fatal)"
+}
+
+install_aws_creds() {
+  # OpenClaw scrubs AWS_CONTAINER_CREDENTIALS_RELATIVE_URI from tool shells
+  # (host-env-security-policy.json: blockedOverrideOnlyKeys), so the agent
+  # can't use task-role creds via the ECS metadata hint. Work around it by
+  # writing a shared credentials file that uses credential_process to curl
+  # the metadata endpoint directly — AWS_CONFIG_FILE/~/.aws/config DO pass
+  # through the scrubber. The creds are re-fetched per process invocation,
+  # so rotation is automatic. Excluded from S3 sync (per-boot only).
+  local uri="${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:-}"
+  if [ -z "$uri" ]; then
+    log "install_aws_creds: no relative URI in env — skipping (non-Fargate?)"
+    return 0
+  fi
+  install -d -o openclaw -g openclaw -m 0700 "$WORKSPACE_DIR/.aws"
+  cat > "$WORKSPACE_DIR/.aws/ecs-creds.sh" <<EOF
+#!/bin/bash
+curl -sf "http://169.254.170.2${uri}" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps({"Version":1,"AccessKeyId":d["AccessKeyId"],"SecretAccessKey":d["SecretAccessKey"],"SessionToken":d["Token"],"Expiration":d["Expiration"]}))'
+EOF
+  cat > "$WORKSPACE_DIR/.aws/config" <<EOF
+[default]
+region = ${AWS_DEFAULT_REGION:-us-east-1}
+credential_process = $WORKSPACE_DIR/.aws/ecs-creds.sh
+EOF
+  chmod 0755 "$WORKSPACE_DIR/.aws/ecs-creds.sh"
+  chmod 0644 "$WORKSPACE_DIR/.aws/config"
+  chown -R openclaw:openclaw "$WORKSPACE_DIR/.aws"
+  log "install_aws_creds: credential_process wired at ~/.aws/config"
 }
 
 install_config() {
@@ -92,8 +123,12 @@ lock_config() {
   done
   # Small grace period so any post-ready persistence flush completes.
   sleep 2
-  chown root:root "$OPENCLAW_CONFIG_PATH" || log "lock_config: chown failed (non-fatal)"
-  chmod 0444 "$OPENCLAW_CONFIG_PATH" || log "lock_config: chmod failed (non-fatal)"
+  # Flip both the file and the containing dir back to root. Without the dir
+  # flip openclaw could still atomic-rename-over the locked file because it
+  # owns the parent directory.
+  chown root:root "$OPENCLAW_CONFIG_PATH" || log "lock_config: chown file failed (non-fatal)"
+  chmod 0444 "$OPENCLAW_CONFIG_PATH" || log "lock_config: chmod file failed (non-fatal)"
+  chown root:root "$(dirname "$OPENCLAW_CONFIG_PATH")" || log "lock_config: chown dir failed (non-fatal)"
   log "lock_config: config locked"
 }
 
@@ -200,6 +235,7 @@ shutdown() {
 trap shutdown TERM INT
 
 sync_down
+install_aws_creds
 install_config
 configure-openclaw
 

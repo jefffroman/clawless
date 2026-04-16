@@ -1,15 +1,6 @@
 ---
 name: sleep
-description: Put yourself to sleep. Workspace and memory are preserved. You resume where you left off when woken.
-author: clawless
-version: 2.0.0
-triggers:
-  - "go to sleep"
-  - "pause yourself"
-  - "shut down"
-  - "take a break"
-  - "sleep mode"
-metadata: {"clawdbot":{"emoji":"😴","requires":{"bins":["aws"]}}}
+description: Put yourself to sleep to save compute while preserving workspace and memory. Use when the user asks you to sleep, pause, shut down, take a break, or stop running until they come back. Resumes where you left off when woken.
 ---
 
 # Sleep

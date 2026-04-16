@@ -18,6 +18,9 @@ RUN arch=$(dpkg --print-architecture) \
     && /tmp/aws/install \
     && rm -rf /tmp/awscli.zip /tmp/aws
 
+RUN curl -LsSf https://astral.sh/uv/install.sh | \
+      env UV_INSTALL_DIR=/usr/local/bin UV_UNMANAGED_INSTALL=1 sh
+
 RUN npm install -g openclaw@latest
 
 # node:22-slim ships with a `node` user at UID 1000 — reclaim the UID for
@@ -48,7 +51,12 @@ RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
 # this to /var/lib/openclaw/openclaw.json (root-owned, 0644) and configure-openclaw
 # patches it with per-client env-driven config. Kept out of the agent workspace
 # tree so the agent's file tools don't see or edit it.
+# /var/lib/openclaw needs to be openclaw-writable so the gateway's startup
+# plugin auto-enable flow can write its atomic rename tmp file. lock_config()
+# in the entrypoint flips ownership back to root and chmods the config file
+# to 0444 once the gateway reports ready.
 RUN mkdir -p /opt/openclaw /var/lib/openclaw \
+    && chown openclaw:openclaw /var/lib/openclaw \
     && chmod 0755 /var/lib/openclaw
 COPY docker/gateway/files/openclaw.baseline.json /opt/openclaw/openclaw.baseline.json
 RUN chown root:root /opt/openclaw/openclaw.baseline.json \
@@ -58,10 +66,10 @@ RUN chown root:root /opt/openclaw/openclaw.baseline.json \
 # - sleep: self-stop via ecs:UpdateService (task role scoped to own service)
 # - memory-curation: MEMORY.md authoring protocol
 # - searxng: web search via shared Lambda (SEARXNG_URL injected by task def)
-COPY docker/gateway/skills/ /usr/lib/node_modules/openclaw/skills/
-RUN chmod -R a+rX /usr/lib/node_modules/openclaw/skills/sleep \
-                  /usr/lib/node_modules/openclaw/skills/memory-curation \
-                  /usr/lib/node_modules/openclaw/skills/searxng
+COPY docker/gateway/skills/ /usr/local/lib/node_modules/openclaw/skills/
+RUN chmod -R a+rX /usr/local/lib/node_modules/openclaw/skills/sleep \
+                  /usr/local/lib/node_modules/openclaw/skills/memory-curation \
+                  /usr/local/lib/node_modules/openclaw/skills/searxng
 
 # Warm the sentence-transformers model cache as openclaw so it's owned correctly
 # and available without a cold download at runtime.

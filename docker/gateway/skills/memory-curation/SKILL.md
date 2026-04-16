@@ -1,14 +1,6 @@
 ---
 name: memory-curation
-description: Maintain your long-term memory. Write learnings to MEMORY.md, archive old sections to daily logs, keep the keyword index current.
-author: clawless
-version: 1.0.0
-triggers:
-  - "save this"
-  - "remember this"
-  - "update memory"
-  - "memory maintenance"
-  - "archive memory"
+description: Curate your long-term memory in MEMORY.md and dated archives under memory/. Use at the end of a session, before going to sleep, or whenever the user asks you to remember, save, archive, or reorganize what you've learned so future-you can pick up where you left off.
 ---
 
 # Memory Curation
