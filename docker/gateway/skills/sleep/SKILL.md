@@ -22,6 +22,12 @@ Only when the user **explicitly** asks you to sleep, pause, shut down, or take a
    SERVICE="clawless-$(printf '%s' "$AGENT_SLUG" | tr '/' '-')"
    REGION="$AWS_DEFAULT_REGION"
 
+   # Guard: if already scaled to 0 (session replay), exit cleanly
+   DESIRED=$(aws ecs describe-services \
+     --cluster "$ECS_CLUSTER" --services "$SERVICE" \
+     --region "$REGION" --query 'services[0].desiredCount' --output text 2>/dev/null || echo 1)
+   [ "$DESIRED" = "0" ] && exit 0
+
    # Mark inactive in SSM (source of truth for agent state)
    aws ssm put-parameter \
      --name "/clawless/clients/${AGENT_SLUG}/active" \
@@ -33,17 +39,15 @@ Only when the user **explicitly** asks you to sleep, pause, shut down, or take a
      --cluster "$ECS_CLUSTER" --service "$SERVICE" \
      --desired-count 0 --region "$REGION" >/dev/null
 
-   # Watchdog: if still running after 60s, rollback SSM
-   ( sleep 60
-     DESIRED=$(aws ecs describe-services \
+   # Watchdog: if desired count bounced back (resumed or failed), rollback SSM
+   ( sleep 5
+     D=$(aws ecs describe-services \
        --cluster "$ECS_CLUSTER" --services "$SERVICE" \
        --region "$REGION" --query 'services[0].desiredCount' --output text 2>/dev/null)
-     if [ "$DESIRED" != "0" ]; then
-       aws ssm put-parameter \
-         --name "/clawless/clients/${AGENT_SLUG}/active" \
-         --type String --value true --overwrite \
-         --region "$REGION" >/dev/null
-     fi
+     [ "$D" != "0" ] && aws ssm put-parameter \
+       --name "/clawless/clients/${AGENT_SLUG}/active" \
+       --type String --value true --overwrite \
+       --region "$REGION" >/dev/null
    ) &
    ```
 6. **Stop** — After the command returns, do not send any further messages. ECS will deliver SIGTERM within ~30 seconds; your workspace will be synced to S3 and the task will stop.
