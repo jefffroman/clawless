@@ -30,10 +30,11 @@ Step Functions → DynamoDB (pending) → Lifecycle Lambda
         +-- per-agent IAM task role (Bedrock, S3, CloudWatch, ECS self-stop)
         +-- shared S3 backup bucket (per-agent prefix, cross-region replication)
         +-- shared SearXNG Lambda (web search, one per region)
-        +-- shared sleep-listener Lambda (gateway self-sleep callback)
+        +-- shared wake-listener Lambda (Telegram webhook receiver for sleeping agents)
 ```
 
 - **Sleep/wake**: `ecs:UpdateService desired_count=0/1`. Container syncs workspace to S3 on SIGTERM; syncs back down on boot.
+- **Channel-triggered wake**: When a sleeping agent receives a Telegram message, the wake listener Lambda queues it in DynamoDB, sets `/active=true`, and triggers the lifecycle SFN. The gateway replays the queued message on boot.
 - **No SSH, no instances**: Fargate tasks are ephemeral. Debug via CloudWatch logs or `aws ecs execute-command`.
 - **Agent memory**: Human-editable Markdown with vector search (sentence-transformers, ChromaDB) — auto-reindexed.
 - **Web search**: Shared SearXNG Lambda — no per-agent process, no API keys.

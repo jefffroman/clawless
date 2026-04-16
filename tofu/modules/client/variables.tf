@@ -23,6 +23,17 @@ variable "agent_channel" {
   default = ""
 }
 
+variable "lifecycle_sfn_arn" {
+  description = "ARN of the lifecycle SFN. The task invokes this to trigger sleep via the standard lifecycle flow."
+  type        = string
+}
+
+variable "wake_listener_url" {
+  description = "Function URL of the wake listener Lambda. Injected into the task env for setWebhook on sleep."
+  type        = string
+  default     = ""
+}
+
 variable "wake_messages_table_name" {
   type    = string
   default = ""

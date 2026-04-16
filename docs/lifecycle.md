@@ -31,6 +31,10 @@ All resources exist. ECS service running at `desired_count=1`. Gateway container
 
 ECS service at `desired_count=0`. No running tasks — no compute costs. All durable resources (IAM, S3 data, log group, task def) preserved. Container ran `sync_up()` on SIGTERM before exiting.
 
+**Telegram only:** On sleep, the gateway container redirects the agent's Telegram webhook to the wake-listener Lambda Function URL (`setWebhook`). While sleeping, incoming Telegram messages are queued in DynamoDB (`clawless-wake-messages`) and trigger an automatic wake via the lifecycle SFN.
+
+On wake, the gateway deletes the webhook (`deleteWebhook`) immediately before reading queued messages from DynamoDB, ensuring no messages are lost during the handoff.
+
 ```bash
 ./scripts/sleep-agent.sh <client-slug>-<agent-slug>
 ./scripts/wake-agent.sh <client-slug>-<agent-slug>
@@ -65,6 +69,20 @@ Script / UI → Step Functions Express Workflow:
 
 Scripts and the UI only need **one API call** (`start-execution`) — SFN handles both the SSM write and lifecycle coordination.
 
+### Channel-triggered wake
+
+When a sleeping Telegram agent receives a message, it follows a different entry point:
+
+```
+Telegram → Wake Listener Lambda (Function URL):
+             1. Queue message in DynamoDB (clawless-wake-messages, list append)
+             2. Set SSM /active=true
+             3. Start lifecycle SFN execution
+             4. Reply to user: "waking up…"
+```
+
+The lifecycle Lambda then picks up the wake via the normal GRAB → CLASSIFY → FAST PATH flow. On boot, the gateway entrypoint deletes the Telegram webhook (restoring long-polling) and replays queued messages from DynamoDB.
+
 ### SFN states
 
 | State | Type | Purpose |
@@ -94,6 +112,7 @@ GRAB → CLASSIFY → FAST/SLOW DISPATCH → RELEASE
 
 3. FAST PATH (sleep/wake):
    - Existing service → ecs:UpdateService desired=0 or 1. Done in seconds.
+   - On wake, re-resolves the ECR `:latest` tag — forces a new deployment only if the image was pushed since the last deployment (avoids unnecessary image pulls).
    - Container SIGTERM handler syncs workspace to S3 on sleep.
    - Container sync_down restores workspace on wake.
 
@@ -148,7 +167,7 @@ For tofu state lock contention (rare — only when an operator runs a local `tof
 
 **The Lambda handles**: agent-level resources — everything inside `module.client["slug"]`. This includes the ECS service, task definition, task role, IAM policies, log group, and S3 seed objects.
 
-**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repos, Step Functions workflow, DynamoDB table, SNS topic, VPC, ECS cluster, SearXNG Lambda, sleep-listener Lambda, and budget alerts. These resources are not targeted by the Lambda.
+**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repos, Step Functions workflow, DynamoDB tables, SNS topic, VPC, ECS cluster, SearXNG Lambda, wake-listener Lambda, and budget alerts. These resources are not targeted by the Lambda.
 
 After changing `lambda/handler.py`, `lambda/Dockerfile`, or any root-level tofu config:
 

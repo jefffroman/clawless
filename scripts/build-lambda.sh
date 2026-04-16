@@ -33,10 +33,9 @@ IMAGE_URI="${ECR_REPO_URL}:latest"
 
 echo "Building image: $IMAGE_URI"
 
-# Authenticate Docker to ECR
-aws ecr get-login-password --region "$REGION" \
-  | docker login --username AWS --password-stdin \
-      "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+# Auth is handled by docker-credential-ecr-login via credHelpers in
+# ~/.docker/config.json — no explicit `docker login` needed. The helper
+# fetches fresh creds per push/pull using the ambient AWS profile.
 
 # Build (context is repo root so Dockerfile can COPY from tofu/ and lambda/)
 docker build \

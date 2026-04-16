@@ -17,21 +17,36 @@ Only when the user **explicitly** asks you to sleep, pause, shut down, or take a
 2. **Save memory** — Immediately write anything important from the current session to your memory files (MEMORY.md, USER.md, PROJECTS.md, etc.). Think about: what did the user tell you? What were you working on? What should you remember when you wake up? This is your last chance to persist context — only what's on disk survives.
 3. **Wait** — Pause for 5 seconds after confirmation. This gives the user a chance to change their mind. You can overlap the memory save with this wait.
 4. **Farewell** — Send a farewell message. Keep it natural — say goodbye, mention you'll remember everything when you wake up.
-5. **Execute** — Run this command to scale your own ECS service to zero:
+5. **Execute** — Run this command to mark yourself as inactive and trigger the lifecycle state machine to pause your task:
    ```bash
-   aws ecs update-service \
-     --cluster "$ECS_CLUSTER" \
-     --service "clawless-$(printf '%s' "$AGENT_SLUG" | tr '/' '-')" \
-     --desired-count 0 \
-     --region "$AWS_DEFAULT_REGION" >/dev/null
+   REGION="$AWS_DEFAULT_REGION"
+
+   # Guard: if already inactive (session replay), exit cleanly
+   CURRENT=$(aws ssm get-parameter \
+     --name "/clawless/clients/${AGENT_SLUG}/active" \
+     --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo true)
+   [ "$CURRENT" = "false" ] && exit 0
+
+   # Mark inactive in SSM (source of truth for agent state)
+   aws ssm put-parameter \
+     --name "/clawless/clients/${AGENT_SLUG}/active" \
+     --type String --value false --overwrite \
+     --region "$REGION" >/dev/null
+
+   # Trigger lifecycle SFN — the Lambda handles the ECS scale-down
+   aws stepfunctions start-execution \
+     --state-machine-arn "$LIFECYCLE_SFN_ARN" \
+     --input "{\"name\":\"/clawless/clients/${AGENT_SLUG}\",\"operation\":\"Update\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+     --region "$REGION" >/dev/null
    ```
-6. **Stop** — After the command returns, do not send any further messages. ECS will deliver SIGTERM within ~30 seconds; your workspace will be synced to S3 and the task will stop.
+6. **Stop** — After the command returns, do not send any further messages. The lifecycle Lambda will scale your ECS service to zero; you'll receive SIGTERM within ~30 seconds. Your workspace will be synced to S3 and the task will stop.
 
 ## What Happens
 
-- ECS scales your service from 1 to 0; the Fargate task receives SIGTERM
-- The entrypoint syncs your workspace (`$HOME`) to S3 and exits cleanly
-- When woken, a new Fargate task starts, syncs the workspace back down, and you resume
+- The lifecycle Lambda scales your ECS service from 1 to 0; the Fargate task receives SIGTERM
+- The entrypoint redirects your Telegram webhook to a wake listener, syncs your workspace to S3, and exits
+- When a user messages you, the wake listener queues the message, sets you active, and triggers the lifecycle Lambda to scale you back up
+- A new Fargate task starts, syncs the workspace back down, replays the queued message, and you resume
 - Memory files, workspace state, session history — all preserved
 - You will not experience the passage of time; it will feel instant
 

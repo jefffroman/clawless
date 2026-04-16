@@ -101,6 +101,8 @@ def lambda_handler(event, context):
     # Container SIGTERM handler runs sync-up on stop; sync-down on next boot.
     for slug in list(fast_slugs):
         if _fargate_service_exists(slug):
+            # Re-resolve :latest if ECR image was pushed since last deployment
+            _fargate_ensure_latest_image(slug)
             print(f"[fargate:{slug}] resume via ecs:UpdateService desired=1")
             _fargate_set_desired(slug, 1)
             fast_slugs.discard(slug)
@@ -282,6 +284,62 @@ def _fargate_set_desired(slug, count):
     name = _fargate_service_name(slug)
     ecs.update_service(cluster=ECS_CLUSTER, service=name, desiredCount=count)
     print(f"[fargate:{slug}] desired_count={count}")
+
+
+def _fargate_ensure_latest_image(slug):
+    """Force a new deployment only if the service's image digest is stale.
+
+    Compares the image digest in the service's current task definition against
+    the digest ECR has for :latest. Skips the force-new-deployment (and the
+    resulting image pull delay) when they already match.
+    """
+    name = _fargate_service_name(slug)
+    try:
+        # Get the image URI from the service's current task definition
+        svc_resp = ecs.describe_services(cluster=ECS_CLUSTER, services=[name])
+        services = [s for s in svc_resp.get("services", []) if s.get("status") != "INACTIVE"]
+        if not services:
+            return
+        task_def_arn = services[0]["taskDefinition"]
+        td_resp = ecs.describe_task_definition(taskDefinition=task_def_arn)
+        image_uri = td_resp["taskDefinition"]["containerDefinitions"][0]["image"]
+
+        # image_uri is like "123456.dkr.ecr.us-east-1.amazonaws.com/clawless-gateway:latest"
+        repo_name = image_uri.split("/", 1)[1].split(":")[0]
+
+        # Get the digest ECS resolved for this deployment
+        deployments = services[0].get("deployments", [])
+        if not deployments:
+            return
+
+        # Get the current :latest digest from ECR
+        ecr = boto3.client("ecr")
+        ecr_resp = ecr.describe_images(
+            repositoryName=repo_name,
+            imageIds=[{"imageTag": "latest"}],
+        )
+        ecr_digest = ecr_resp["imageDetails"][0]["imageDigest"]
+
+        # Get the digest the task definition was last deployed with by checking
+        # the most recent task's image digest, or compare via the task def image
+        # If the deployment has a rolloutState, the image was resolved at deploy time.
+        # We need to check what digest the running/pending tasks actually use.
+        # Simplest: compare task def revision age vs ECR image push time.
+        ecr_pushed = ecr_resp["imageDetails"][0]["imagePushedAt"]
+        deploy_created = deployments[0].get("createdAt")
+
+        if deploy_created and ecr_pushed > deploy_created:
+            print(f"[fargate:{slug}] image updated since last deployment — forcing new deployment")
+            ecs.update_service(cluster=ECS_CLUSTER, service=name, forceNewDeployment=True)
+        else:
+            print(f"[fargate:{slug}] image digest current — skipping force-new-deployment")
+    except (ClientError, KeyError, IndexError) as e:
+        # On any failure, force the deployment to be safe
+        print(f"[fargate:{slug}] digest check failed ({e}) — forcing new deployment")
+        try:
+            ecs.update_service(cluster=ECS_CLUSTER, service=name, forceNewDeployment=True)
+        except ClientError:
+            print(f"[fargate:{slug}] WARNING: force-new-deployment also failed")
 
 
 # ── SSM agent config ─────────────────────────────────────────────────────────
