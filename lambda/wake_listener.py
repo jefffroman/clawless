@@ -68,7 +68,7 @@ def lambda_handler(event, context):
         print("No message text — ignoring (might be a media message or service update)")
         return {"statusCode": 200, "body": "ok"}
 
-    print(f"Message from {sender_name}: {text[:100]}")
+    print(f"Message received ({len(text)} chars)")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     now_iso = now.isoformat()
