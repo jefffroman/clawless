@@ -42,9 +42,11 @@ Each task role is scoped to:
 
 - `s3://{backup_bucket}/agents/{slug}/*` (workspace sync)
 - Its own ECS service (so the gateway can self-stop on sleep)
+- `ssm:PutParameter` on its own `/active` parameter (for self-sleep via the sleep skill)
+- `states:StartExecution` on the lifecycle SFN (to trigger pause/resume)
 - Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
 - CloudWatch Logs (its own log group)
-- DynamoDB wake messages table (if configured)
+- DynamoDB wake messages table (message replay on boot)
 
 ## Gateway token
 
