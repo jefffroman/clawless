@@ -23,6 +23,12 @@ variable "agent_channel" {
   default = ""
 }
 
+variable "wake_listener_url" {
+  description = "Function URL of the wake listener Lambda. Injected into the task env for setWebhook on sleep."
+  type        = string
+  default     = ""
+}
+
 variable "wake_messages_table_name" {
   type    = string
   default = ""

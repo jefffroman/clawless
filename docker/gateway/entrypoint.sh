@@ -175,6 +175,22 @@ except Exception:
   done
   log "wake-greet: gateway healthy after ${elapsed}s"
 
+  # ── Delete Telegram webhook so OpenClaw long-polling takes over ────────
+  if [ "$OPENCLAW_CHANNEL" = "telegram" ]; then
+    local bot_token=""
+    bot_token=$(printf '%s' "$OPENCLAW_CHANNEL_CONFIG" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("botToken",""))
+except: print("")' 2>/dev/null || true)
+    if [ -n "$bot_token" ]; then
+      log "wake-greet: deleting Telegram webhook…"
+      curl -sf -X POST "https://api.telegram.org/bot${bot_token}/deleteWebhook" \
+        >/dev/null \
+        && log "wake-greet: webhook deleted" \
+        || log "wake-greet: WARNING — deleteWebhook failed"
+    fi
+  fi
+
+  # ── Read and replay queued wake messages from DynamoDB ─────────────────
   local key="{\"slug\": {\"S\": \"${AGENT_SLUG}\"}}"
   local item
   item=$(aws dynamodb get-item \
@@ -183,10 +199,25 @@ except Exception:
     --output json 2>/dev/null || echo '{}')
 
   local msg
-  msg=$(printf '%s' "$item" | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("Item") or {}).get("message",{}).get("S",""))' 2>/dev/null || true)
+  # Support list format (messages.L[] from wake listener) and legacy
+  # single-message format (message.S from manual DynamoDB writes).
+  msg=$(printf '%s' "$item" | python3 -c 'import sys,json
+d = json.load(sys.stdin).get("Item") or {}
+msgs = d.get("messages",{}).get("L")
+if msgs:
+    lines = []
+    for m in msgs:
+        e = m.get("M",{})
+        name = e.get("sender_name",{}).get("S","User")
+        text = e.get("text",{}).get("S","")
+        lines.append(f"{name}: {text}" if text else "")
+    print("\n".join(l for l in lines if l))
+else:
+    print(d.get("message",{}).get("S",""))
+' 2>/dev/null || true)
 
   if [ -n "$msg" ]; then
-    log "wake-greet: replaying queued message"
+    log "wake-greet: replaying queued message(s)"
     aws dynamodb delete-item --table-name "$WAKE_MESSAGES_TABLE" --key "$key" >/dev/null 2>&1 || true
   else
     msg="Hello ${AGENT_NAME:-$AGENT_SLUG}"
@@ -217,6 +248,38 @@ memory_reindex_loop() {
   done
 }
 
+set_telegram_webhook() {
+  # Redirect Telegram messages to the wake listener Lambda so messages
+  # sent while the agent is sleeping get queued in DynamoDB.
+  # No-op for non-Telegram agents or if WAKE_LISTENER_URL is unset.
+  if [ "${OPENCLAW_CHANNEL:-}" != "telegram" ]; then
+    return 0
+  fi
+  if [ -z "${WAKE_LISTENER_URL:-}" ]; then
+    log "set_telegram_webhook: WAKE_LISTENER_URL unset — skipping"
+    return 0
+  fi
+  local bot_token=""
+  if [ -n "${OPENCLAW_CHANNEL_CONFIG:-}" ]; then
+    bot_token=$(printf '%s' "$OPENCLAW_CHANNEL_CONFIG" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("botToken",""))
+except: print("")' 2>/dev/null || true)
+  fi
+  if [ -z "$bot_token" ]; then
+    log "set_telegram_webhook: no botToken in OPENCLAW_CHANNEL_CONFIG — skipping"
+    return 0
+  fi
+  local resource_slug="${AGENT_SLUG//\//-}"
+  log "set_telegram_webhook: redirecting to wake listener…"
+  curl -sf -X POST "https://api.telegram.org/bot${bot_token}/setWebhook" \
+    -d "url=${WAKE_LISTENER_URL}" \
+    -d "secret_token=${resource_slug}" \
+    -d "allowed_updates=[\"message\"]" \
+    >/dev/null \
+    && log "set_telegram_webhook: webhook set" \
+    || log "set_telegram_webhook: WARNING — setWebhook failed"
+}
+
 gateway_pid=""
 reindex_pid=""
 shutdown() {
@@ -228,6 +291,7 @@ shutdown() {
     kill -TERM "$gateway_pid" 2>/dev/null || true
     wait "$gateway_pid" 2>/dev/null || true
   fi
+  set_telegram_webhook
   sync_up
   log "exiting cleanly"
   exit 0

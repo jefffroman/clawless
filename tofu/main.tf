@@ -18,6 +18,7 @@ module "client" {
   aws_region               = var.aws_region
   subnet_ids               = [for s in aws_subnet.public : s.id]
   security_group_ids       = [aws_security_group.fargate_tasks.id]
+  wake_listener_url        = aws_lambda_function_url.wake_listener.function_url
   wake_messages_table_name = aws_dynamodb_table.wake_messages.name
   wake_messages_table_arn  = aws_dynamodb_table.wake_messages.arn
   searxng_url              = aws_lambda_function_url.searxng.function_url

@@ -133,6 +133,7 @@ resource "aws_ecs_task_definition" "gateway" {
         name  = "OPENCLAW_CHANNEL_CONFIG"
         value = var.channel_config == null ? "" : jsonencode(var.channel_config)
       },
+      { name = "WAKE_LISTENER_URL", value = var.wake_listener_url },
       { name = "WAKE_MESSAGES_TABLE", value = var.wake_messages_table_name },
       { name = "SEARXNG_URL", value = var.searxng_url },
     ]
