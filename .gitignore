@@ -16,9 +16,7 @@
 CLAUDE.md
 CONTEXT.md
 
-# Ansible — generated and secret files
-ansible/inventory/hosts.yml
-ansible/host_vars/*/vars.yml
-
 # Files being edited
 **/*.swp
+__pycache__/
+tofu/.build/

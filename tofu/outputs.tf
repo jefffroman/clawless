@@ -22,8 +22,3 @@ output "lifecycle_sfn_arn" {
   description = "ARN of the lifecycle Step Functions state machine. Scripts and platform invoke this directly after SSM changes to trigger lifecycle processing."
   value       = aws_sfn_state_machine.lifecycle.arn
 }
-
-output "archive_bucket" {
-  description = "Name of the shared S3 archive bucket where removed clients' data is retained for 90 days."
-  value       = aws_s3_bucket.backups.bucket
-}

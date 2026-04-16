@@ -48,7 +48,7 @@ hr
 SSM_MISSING=false
 if ! aws ssm get-parameter --name "$AGENT_PARAM" --region "$REGION" >/dev/null 2>&1; then
   log "WARNING: SSM parameter '${AGENT_PARAM}' not found — already deleted?"
-  log "  The Lightsail instance and other AWS resources may still exist."
+  log "  The Fargate service and other AWS resources may still exist."
   log "  Proceeding with lifecycle invocation to ensure full cleanup."
   SSM_MISSING=true
 fi

@@ -1,104 +1,113 @@
 variable "agent_slug" {
-  description = "Short unique identifier for this agent (alphanumeric + hyphens, format: {client}-{agent}). Used in all resource names."
-  type        = string
-}
-
-variable "client_name" {
-  description = "Human-readable client (customer) name used in tags."
-  type        = string
-}
-
-variable "availability_zone" {
-
-  description = "Lightsail availability zone."
-  type        = string
-}
-
-variable "bundle_id" {
-  description = "Lightsail bundle (plan) ID."
-  type        = string
-}
-
-variable "blueprint_id" {
-  description = "Lightsail blueprint ID. Used only when both snapshot variables are empty."
-  type        = string
-}
-
-variable "golden_snapshot_name" {
-  description = "Golden snapshot name for new client provisioning. Takes precedence over blueprint_id. Empty string means use blueprint."
-  type        = string
-  default     = ""
-}
-
-variable "backup_bucket" {
-  description = "Shared S3 backup bucket name. Agent workspace is synced to agents/{slug}/workspace/ within this bucket."
-  type        = string
-}
-
-variable "clawless_version" {
-  description = "Git ref (tag or branch) to clone for Ansible playbooks at boot."
+  description = "Agent key, format 'client_slug/agent_slug'."
   type        = string
 }
 
 variable "agent_name" {
-  description = "Display name of the agent. Embedded in user-data at apply time."
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
+}
+
+variable "client_name" {
+  type    = string
+  default = ""
 }
 
 variable "agent_style" {
-  description = "Agent style (e.g. 'assistant'). Embedded in user-data at apply time."
-  type        = string
-  default     = "assistant"
+  type    = string
+  default = ""
 }
 
 variable "agent_channel" {
-  description = "Channel integration type (e.g. 'telegram'). Embedded in user-data at apply time."
+  type    = string
+  default = ""
+}
+
+variable "wake_messages_table_name" {
+  type    = string
+  default = ""
+}
+
+variable "wake_messages_table_arn" {
+  type    = string
+  default = ""
+}
+
+variable "searxng_url" {
+  description = "Shared SearXNG Lambda Function URL, injected into the task env so the searxng skill can reach the search backend."
   type        = string
   default     = ""
 }
 
 variable "channel_config" {
-  description = "Channel-specific config map. Embedded in user-data at apply time. Null if no channel configured."
-  type        = any
-  default     = null
+  type    = any
+  default = null
 }
 
 variable "bedrock_model" {
-  description = "OpenClaw model string for this client (e.g. bedrock/us.amazon.nova-pro-v1:0)."
-  type        = string
-  default     = "bedrock/us.amazon.nova-lite-v1:0"
-}
-
-variable "is_new" {
-  description = "True for agents being provisioned for the first time. Uses golden snapshot (or blueprint) instead of the pause snapshot. False (default) assumes a pause snapshot exists and errors if it does not."
-  type        = bool
-  default     = false
+  type    = string
+  default = "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
 variable "active" {
-  description = "When false, ephemeral resources (Lightsail instance, SSM activation, firewall) are destroyed. Durable resources (S3, IAM) are preserved so workspace data and the IAM role survive."
+  description = "When false the service stays at desired_count=0."
   type        = bool
   default     = true
 }
 
-variable "lifecycle_sfn_arn" {
-  description = "ARN of the lifecycle Step Functions state machine. Baked into the self-sleep helper and used for IAM scoping."
+variable "image_uri" {
+  description = "Gateway container image URI (e.g. ECR repo:tag)."
   type        = string
 }
 
-variable "wake_messages_table_arn" {
-  description = "ARN of the clawless-wake-messages DynamoDB table."
-  type        = string
+variable "cluster_arn" {
+  type = string
 }
 
-variable "wake_messages_table_name" {
-  description = "Name of the clawless-wake-messages DynamoDB table. Baked into the wake-greet script."
-  type        = string
+variable "cluster_name" {
+  type = string
+}
+
+variable "execution_role_arn" {
+  type = string
+}
+
+variable "backup_bucket" {
+  type = string
+}
+
+variable "aws_region" {
+  type = string
+}
+
+# Network — defaults suit the dev public-subnet posture. Phase 7 flips these
+# to private subnets + VPC endpoints via a variable swap, no module rewrite.
+variable "subnet_ids" {
+  type = list(string)
+}
+
+variable "security_group_ids" {
+  type = list(string)
+}
+
+variable "assign_public_ip" {
+  type    = bool
+  default = true
+}
+
+variable "task_cpu" {
+  description = "Fargate task CPU units. 2048 = 2 vCPU."
+  type        = number
+  default     = 2048
+}
+
+variable "task_memory" {
+  description = "Fargate task memory (MB). 4096 = 4 GB."
+  type        = number
+  default     = 4096
 }
 
 variable "tags" {
-  description = "Tags to merge onto all resources alongside the per-client Client tag."
-  type        = map(string)
-  default     = {}
+  type    = map(string)
+  default = {}
 }

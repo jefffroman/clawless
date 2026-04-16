@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # sleep-agent.sh — Put an agent to sleep by setting its /active parameter to "false".
-# The lifecycle Lambda handles snapshot creation and instance destruction automatically.
+# The lifecycle Lambda scales the Fargate service to desired_count=0; the running
+# task receives SIGTERM and syncs its workspace up to S3 before exiting.
 #
 # Usage: ./scripts/sleep-agent.sh <client-slug> <agent-slug> [--region <region>]
 # Example: ./scripts/sleep-agent.sh zalman wingmate
@@ -75,6 +76,6 @@ aws stepfunctions start-execution \
 log "Step Functions invoked."
 
 hr
-log "Sleep triggered. The lifecycle Lambda will snapshot and destroy the instance."
+log "Sleep triggered. The Fargate task will sync workspace and stop."
 log "Wake with: ./scripts/wake-agent.sh ${CLIENT_SLUG} ${AGENT_SLUG}"
 hr

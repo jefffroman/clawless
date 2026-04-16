@@ -109,8 +109,9 @@ echo "Version set to ${CLAWLESS_VERSION} (from current git ref)"
 hr
 echo "Bootstrap complete. Next steps:"
 echo
-echo "  cd tofu && tofu init -backend-config=backend.hcl && tofu apply"
+echo "  ./scripts/build-gateway-image.sh  # build and push Fargate gateway image"
+echo "  ./scripts/build-searxng-image.sh  # build and push SearXNG Lambda image"
 echo "  ./scripts/build-lambda.sh         # build and push lifecycle Lambda image"
-echo "  ./scripts/bake-snapshot.sh        # build golden image"
+echo "  cd tofu && tofu init -backend-config=backend.hcl && tofu apply"
 echo "  ./scripts/add-agent.sh            # add your first agent"
 hr

@@ -107,9 +107,11 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Resource = "*"
       },
       {
-        Sid      = "Lightsail"
+        # Fargate dispatch: UpdateService for pause/resume, Describe for existence.
+        # tofu apply during add/remove handles the rest via ecs:*.
+        Sid      = "ECS"
         Effect   = "Allow"
-        Action   = ["lightsail:*"]
+        Action   = ["ecs:*", "ec2:*", "application-autoscaling:*"]
         Resource = "*"
       },
       {
@@ -120,9 +122,9 @@ resource "aws_iam_role_policy" "lifecycle_lambda" {
         Resource = "*"
       },
       {
-        Sid    = "Monitoring"
-        Effect = "Allow"
-        Action = ["cloudwatch:*", "logs:*", "sns:*", "budgets:*"]
+        Sid      = "Monitoring"
+        Effect   = "Allow"
+        Action   = ["cloudwatch:*", "logs:*", "sns:*", "budgets:*"]
         Resource = "*"
       },
       {
@@ -190,6 +192,8 @@ resource "aws_lambda_function" "lifecycle" {
       REPO_URL        = "https://github.com/jefffroman/clawless"
       LIFECYCLE_TABLE = aws_dynamodb_table.lifecycle_pending.name
       SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
+      ECS_CLUSTER     = aws_ecs_cluster.clawless.name
+      BACKUP_BUCKET   = aws_s3_bucket.backups.id
     }
   }
 
@@ -408,8 +412,8 @@ resource "aws_sfn_state_machine" "lifecycle" {
           "Key" = {
             "slug" = { "S.$" = "$.extract.slug" }
           }
-          "UpdateExpression"          = "SET pending = :op, #ts = :ts, in_progress = if_not_exists(in_progress, :false)"
-          "ExpressionAttributeNames"  = { "#ts" = "timestamp" }
+          "UpdateExpression"         = "SET pending = :op, #ts = :ts, in_progress = if_not_exists(in_progress, :false)"
+          "ExpressionAttributeNames" = { "#ts" = "timestamp" }
           "ExpressionAttributeValues" = {
             ":op"    = { "S.$" = "$.operation" }
             ":ts"    = { "S.$" = "$.time" }

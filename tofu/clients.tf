@@ -1,17 +1,13 @@
 # Agent list is sourced from SSM Parameter Store under /clawless/clients:
 #
 #   /clawless/clients/{client_slug}/{agent_slug}        → {"client_name": "Acme Corp", "agent_name": "Aria", ...}
-#   /clawless/clients/{client_slug}/{agent_slug}/active  → "true" or "false"
+#   /clawless/clients/{client_slug}/{agent_slug}/active → "true" or "false"
 #
 # The /active parameter is split out so agents can pause themselves via a
 # tightly scoped IAM policy (ssm:PutParameter on their own /active path only).
 #
 # Client slug uniqueness is enforced by the storefront (clawless-platform).
 # Tofu derives a globally unique agent key: "{client_slug}/{agent_slug}".
-
-data "aws_ssm_parameter" "version" {
-  name = "/clawless/version"
-}
 
 data "aws_ssm_parameters_by_path" "clawless" {
   path            = "/clawless/clients"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # wake-agent.sh — Wake a sleeping agent by setting its /active parameter to "true".
-# The lifecycle Lambda discovers the sleep snapshot, restores the instance,
-# and cleans up the snapshot automatically.
+# The lifecycle Lambda scales the Fargate service to desired_count=1; the new
+# task syncs workspace down from S3 and boots the gateway.
 #
 # Usage: ./scripts/wake-agent.sh <client-slug> <agent-slug> [--region <region>]
 # Example: ./scripts/wake-agent.sh zalman wingmate
@@ -76,22 +76,17 @@ aws stepfunctions start-execution \
   --region "$REGION" >/dev/null
 log "Step Functions invoked."
 
-log "Waiting for SSM agent to reconnect..."
-INSTANCE_ID=""
+SERVICE_NAME="clawless-${RESOURCE_SLUG}"
+log "Waiting for Fargate task to reach RUNNING..."
 for i in $(seq 1 24); do
-  INSTANCE_ID=$(aws ssm describe-instance-information \
-    --filters "Key=IamRole,Values=clawless-${RESOURCE_SLUG}-ssm" \
-    --query "InstanceInformationList[?PingStatus=='Online'].InstanceId | [0]" \
-    --output text --region "$REGION" 2>/dev/null || true)
-  [[ -n "$INSTANCE_ID" && "$INSTANCE_ID" != "None" ]] && break
-  sleep 15
+  RUNNING=$(aws ecs describe-services \
+    --cluster clawless \
+    --services "$SERVICE_NAME" \
+    --region "$REGION" \
+    --query 'services[0].runningCount' --output text 2>/dev/null || echo 0)
+  [[ "$RUNNING" == "1" ]] && { log "Task running."; break; }
+  sleep 10
 done
-
-if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
-  log "WARNING: SSM agent did not reconnect within 6 minutes — may still be starting."
-else
-  log "SSM agent reconnected ($INSTANCE_ID)."
-fi
 
 hr
 log "Agent ${CLIENT_SLUG}/${AGENT_SLUG} is waking up."
