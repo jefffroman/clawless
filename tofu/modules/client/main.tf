@@ -70,6 +70,11 @@ resource "aws_iam_role_policy" "task" {
       },
       {
         Effect = "Allow"
+        Action = ["ssm:PutParameter"]
+        Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/clawless/clients/${var.agent_slug}/active"
+      },
+      {
+        Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
           "dynamodb:DeleteItem",
