@@ -6,13 +6,13 @@ Operators use the scripts in `scripts/` — never `tofu apply` directly for clie
 
 ## Resource classification
 
-| Resource | Type | Survives pause? | Survives remove? |
+| Resource | Type | Survives sleep? | Survives remove? |
 |---|---|---|---|
-| Lightsail instance | Ephemeral | No (snapshotted) | No |
-| SSM activation | Ephemeral | No | No |
-| Lightsail firewall rules | Ephemeral | No | No |
-| IAM role + policies | Durable | Yes | No |
-| Shared S3 backup bucket | Durable (shared) | Yes | No (workspace archived first) |
+| ECS service + task definition | Durable | Yes (desired=0) | No |
+| IAM task role + policies | Durable | Yes | No |
+| S3 workspace prefix | Durable | Yes | No (archived first) |
+| CloudWatch log group | Durable | Yes | No |
+| Shared S3 backup bucket | Durable (shared) | Yes | Yes |
 | CRR replication config + role | Durable (shared) | Yes | Yes |
 
 There are no per-agent S3 buckets. All agents share `clawless-backups-{account}` with per-agent prefixes.
@@ -21,24 +21,22 @@ There are no per-agent S3 buckets. All agents share `clawless-backups-{account}`
 
 ### Active (`active: true` in SSM, or default)
 
-All resources exist. Instance is running OpenClaw. Hourly backup timer syncs the workspace to the shared backup bucket.
+All resources exist. ECS service running at `desired_count=1`. Gateway container syncs workspace from S3 on boot.
 
 ```bash
 ./scripts/add-agent.sh
 ```
 
-### Paused (`active: false` in SSM)
+### Sleeping (`active: false` in SSM)
 
-Ephemeral resources destroyed. Durable resources (IAM, S3 data) preserved. No compute costs. Snapshot billed at ~$0.05/GB of actual used disk.
+ECS service at `desired_count=0`. No running tasks — no compute costs. All durable resources (IAM, S3 data, log group, task def) preserved. Container ran `sync_up()` on SIGTERM before exiting.
 
 ```bash
-./scripts/pause-agent.sh <client-slug> <agent-slug>
-./scripts/resume-agent.sh <client-slug> <agent-slug>
+./scripts/sleep-agent.sh <client-slug>-<agent-slug>
+./scripts/wake-agent.sh <client-slug>-<agent-slug>
 ```
 
-> **Gateway token** persists in the snapshot (`/etc/openclaw/openclaw.env`) — no reconfiguration needed on resume.
-
-> **Cannot restore to a smaller Lightsail plan** than the one the snapshot was created on.
+> **Gateway token** persists in SSM SecureString — no reconfiguration needed on wake.
 
 ### Removed (SSM key deleted)
 
@@ -50,7 +48,7 @@ All resources destroyed. Workspace archived to `removed/{slug}/{date}/` in the s
 
 ## Event flow
 
-All agent operations (add, remove, pause, resume) follow the same path:
+All agent operations (add, remove, sleep, wake) follow the same path:
 
 ```
 Script / UI → Step Functions Express Workflow:
@@ -84,38 +82,32 @@ Scripts and the UI only need **one API call** (`start-execution`) — SFN handle
 The Lambda uses a **single-table DynamoDB design** with per-slug ownership:
 
 ```
-GRAB → CLASSIFY → FAST PATH → SLOW PATH → RELEASE
+GRAB → CLASSIFY → FAST/SLOW DISPATCH → RELEASE
 
 1. GRAB: Scan table → conditional UpdateItem (in_progress=false → true) per slug.
          Only one Lambda can own a slug at a time.
 
 2. CLASSIFY: Read SSM state for grabbed slugs.
-   - Not in SSM → removal (slow path)
-   - active=false → pause (slow path)
-   - active=true  → resume/add (fast path)
+   - Not in SSM → removal (slow path — tofu destroy)
+   - active=false → sleep (fast path — ECS desired=0)
+   - active=true  → wake/add
 
-3. FAST PATH: tofu apply for resumes/adds (immediate).
-   - Post-apply: delete pause snapshots, deregister orphaned instances.
+3. FAST PATH (sleep/wake):
+   - Existing service → ecs:UpdateService desired=0 or 1. Done in seconds.
+   - Container SIGTERM handler syncs workspace to S3 on sleep.
+   - Container sync_down restores workspace on wake.
 
-4. SLOW PATH: for each pause/removal:
-   a. Stop instance (~5s — agent goes dark immediately)
-   b. Start snapshot (pauses only, non-blocking)
-   c. Poll snapshot — on each poll, check for intent changes:
-      - Timestamp changed → re-read SSM → if now active: abandon snapshot,
-        start_instance (no tofu apply needed — instance was never destroyed)
-   d. After snapshot completes: tofu apply destroy
-   e. After tofu: check intent again (can't interrupt mid-tofu):
-      - If changed to active: run fast-path tofu apply to recreate
+4. SLOW PATH (add/remove):
+   - Add: tofu apply creates ECS service, task def, IAM role, seed S3 workspace.
+   - Remove: archive S3 prefix, tofu destroy the module.
 
 5. RELEASE: Conditional DeleteItem (timestamp must match grabbed value).
    - If condition fails → record was overwritten → unconditional delete.
 ```
 
 **Key properties:**
-- Resumes apply immediately — never blocked behind pause snapshots
-- Agents go dark within ~5s of pause (stop_instance), not ~2 min (snapshot + destroy)
-- Abandoned pauses (intent changed mid-snapshot) just restart the instance — no unnecessary tofu apply
-- Removals skip snapshots — S3 workspace backups are the safety net
+- Sleep/wake are pure ECS API calls — no tofu apply, completes in seconds
+- Adds and removes go through tofu apply (clones repo at `/clawless/version`)
 - New events arriving during processing are detected via timestamp comparison
 
 ## Per-slug ownership and race handling
@@ -137,14 +129,8 @@ The DynamoDB table (`clawless-lifecycle-pending`) has one record per slug:
 
 ### Race scenarios
 
-**Pause then quick resume (before Lambda grabs):**
-SFN overwrites `pending` with the resume's timestamp. Lambda grabs → reads SSM → `active=true` → fast path (no-op if instance still running).
-
-**Pause then resume (Lambda mid-snapshot):**
-Lambda polls snapshot, calls `_intent_changed()` → `true` → reads SSM → `active=true` → abandons snapshot → `start_instance` → done. No tofu apply needed.
-
-**Pause then resume (Lambda mid-tofu-destroy):**
-Can't interrupt tofu. After destroy completes, Lambda checks `_intent_changed()` → `true` → reads SSM → `active=true` → runs fast-path tofu apply to recreate.
+**Sleep then quick wake (before Lambda grabs):**
+SFN overwrites `pending` with the wake's timestamp. Lambda grabs → reads SSM → `active=true` → `ecs:UpdateService desired=1`.
 
 **Two Lambdas race on same slug:**
 Both try conditional `UpdateItem(in_progress=false → true)`. DynamoDB serializes: one wins, other gets `ConditionalCheckFailedException` → skips.
@@ -160,9 +146,9 @@ For tofu state lock contention (rare — only when an operator runs a local `tof
 
 ## Local vs. Lambda applies
 
-**The Lambda handles**: agent-level resources — everything inside `module.client["slug"]`. This includes the Lightsail instance, IAM role, SSM activation, and firewall rules.
+**The Lambda handles**: agent-level resources — everything inside `module.client["slug"]`. This includes the ECS service, task definition, task role, IAM policies, log group, and S3 seed objects.
 
-**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repo, Step Functions workflow, DynamoDB table, SNS topic, CloudWatch alarms, and budget alerts. These resources are not targeted by the Lambda.
+**Local `tofu apply` handles**: root-level infrastructure — the Lambda itself, ECR repos, Step Functions workflow, DynamoDB table, SNS topic, VPC, ECS cluster, SearXNG Lambda, sleep-listener Lambda, and budget alerts. These resources are not targeted by the Lambda.
 
 After changing `lambda/handler.py`, `lambda/Dockerfile`, or any root-level tofu config:
 
@@ -187,4 +173,4 @@ To retry a failed agent, delete its error flag and trigger a lifecycle event:
 aws ssm delete-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
 ```
 
-Then pause and resume the agent (or use any script that invokes SFN).
+Then wake the agent (or use any script that invokes SFN).

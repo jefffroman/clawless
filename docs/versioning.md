@@ -51,5 +51,5 @@ Remember to set it back after testing. The Lambda clones `--branch`, which accep
 Only tofu code — the module definitions, variable files, and provider config that the Lambda runs via `tofu apply`. It does **not** affect:
 
 - **Lambda handler code** (`lambda/handler.py`): baked into the container image, updated by `tofu apply` locally when `handler.py` or `Dockerfile` change
-- **Ansible playbooks**: pulled from git at boot (user-data) and on `reprovision`, using the `/clawless/version` ref
+- **Gateway container image** (`docker/gateway/`): built via `scripts/build-gateway-image.sh`, independent of the Lambda's git clone
 - **Scripts** (`scripts/*`): run locally from your checkout, not from the Lambda

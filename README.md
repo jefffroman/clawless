@@ -4,11 +4,11 @@
 
 **An on-demand, resumable, serverless OpenClaw platform for AWS.**
 
-> **Alpha** — Clawless is under active development. The core lifecycle (add, pause, resume, remove) is working and tested, but the project is early. Expect rough edges, breaking changes, and missing features. Feedback and contributions are welcome.
+> **Alpha** — Clawless is under active development. The core lifecycle (add, sleep, wake, remove) is working and tested, but the project is early. Expect rough edges, breaking changes, and missing features. Feedback and contributions are welcome.
 
 <br clear="left">
 
-Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent instances on AWS Lightsail. Each agent gets its own Lightsail instance, IAM role, Bedrock access, and workspace backed up to S3. Instances can be paused (snapshotted) when idle and resumed in minutes — paying only for storage when paused.
+Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent gateways on AWS Fargate. Each agent gets its own ECS service, IAM task role, Bedrock access, and workspace backed up to S3. Services can be scaled to zero when idle and resumed in seconds — paying only for storage when sleeping.
 
 ---
 
@@ -18,36 +18,33 @@ Clawless provisions isolated [OpenClaw](https://openclaw.ai) agent instances on 
 SSM Parameter Store (/clawless/clients/{client}/{agent})
         |
         v
-Step Functions → DynamoDB (pending) → Lifecycle Lambda (tofu apply)
+Step Functions → DynamoDB (pending) → Lifecycle Lambda
         |
-        +-- per-agent Lightsail instance (from golden snapshot)
+        +-- per-agent ECS Fargate service (one task, desired 0 or 1)
         |       |
-        |       +-- user-data: ansible-playbook provision-client.yml (local)
-        |       +-- hourly: aws s3 sync workspace → S3 backup bucket
-        |       |
-        |       +-- ubuntu user: runs OpenClaw gateway (user-level systemd)
-        |       +-- sandbox: tool execution in Docker (openclaw-sandbox-common)
-        |       +-- SearXNG: local web search (loopback, no API keys)
+        |       +-- gateway container (node:22-slim + openclaw)
+        |       +-- entrypoint: sync-down S3 → configure → exec gateway
+        |       +-- SIGTERM: sync-up workspace → exit
+        |       +-- tools run in-process (OPENCLAW_SANDBOX_MODE=off)
         |
-        +-- per-agent IAM role (Bedrock, S3, CloudWatch)
-        +-- per-agent SSM Hybrid Activation (temporary rotating creds)
+        +-- per-agent IAM task role (Bedrock, S3, CloudWatch, ECS self-stop)
         +-- shared S3 backup bucket (per-agent prefix, cross-region replication)
+        +-- shared SearXNG Lambda (web search, one per region)
+        +-- shared sleep-listener Lambda (gateway self-sleep callback)
 ```
 
-- **Self-provisioning**: Instances configure themselves at boot via user-data (no inbound SSH required after bake).
-- **Admin access**: Via AWS SSM Session Manager — no port 22 open on production instances.
-- **Pause/resume**: Snapshot → destroy instance → restore from snapshot. Workspace persists in S3.
-- **Sandbox isolation**: Tool execution runs in a Docker container as the `ubuntu` user. The gateway manages the container; tools never run on the host directly.
-- **Agent memory**: 3-layer system — human-editable Markdown, ChromaDB vector search, NetworkX knowledge graph — auto-reindexed every 5 minutes.
-- **Web search**: Self-hosted SearXNG on each instance — no API keys, no per-query costs.
-- **Lifecycle automation**: All agent operations are driven by a single Step Functions invocation that writes to SSM, records the event in DynamoDB, and invokes the Lifecycle Lambda. See [docs/lifecycle.md](docs/lifecycle.md).
+- **Sleep/wake**: `ecs:UpdateService desired_count=0/1`. Container syncs workspace to S3 on SIGTERM; syncs back down on boot.
+- **No SSH, no instances**: Fargate tasks are ephemeral. Debug via CloudWatch logs or `aws ecs execute-command`.
+- **Agent memory**: Human-editable Markdown with vector search (sentence-transformers, ChromaDB) — auto-reindexed.
+- **Web search**: Shared SearXNG Lambda — no per-agent process, no API keys.
+- **Lifecycle automation**: All agent operations driven by a single Step Functions invocation. See [docs/lifecycle.md](docs/lifecycle.md).
 
 ---
 
 ## Terminology
 
 - **Client**: the human customer (e.g. "Acme Corp"). One client may have multiple agents.
-- **Agent**: one OpenClaw instance serving a client. Identified by `{client-slug}/{agent-slug}` (SSM path) or `{client-slug}-{agent-slug}` (AWS resource names).
+- **Agent**: one OpenClaw gateway serving a client. Identified by `{client-slug}/{agent-slug}` (SSM path) or `{client-slug}-{agent-slug}` (AWS resource names).
 
 ---
 
@@ -58,21 +55,20 @@ Step Functions → DynamoDB (pending) → Lifecycle Lambda (tofu apply)
 | Tool | Version | macOS | Ubuntu |
 |------|---------|-------|--------|
 | [OpenTofu](https://opentofu.org/docs/intro/install/) | >= 1.10 | `brew install opentofu` | `snap install opentofu --classic` |
-| [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) | >= 2.14 | `brew install ansible` | `pip3 install ansible` |
 | [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | >= 2.x | `brew install awscli` | official Linux installer (see link) |
 | [Docker](https://docs.docker.com/get-docker/) | >= 24 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | `apt install docker.io` |
 | Python 3 | >= 3.10 | `brew install python` | `apt install python3` |
 | jq | any | `brew install jq` | `apt install jq` |
-| openssl | any | `brew install openssl` | pre-installed |
 
 ### AWS Credentials
 
 You need an IAM user or role with the following permissions:
 
 ```
-lightsail:*    s3:*          iam:*       ssm:*
-sns:*          cloudwatch:*  budgets:*   ecr:*
-states:*       lambda:*      dynamodb:*  bedrock:InvokeModel
+s3:*          iam:*       ssm:*       ecs:*
+sns:*         cloudwatch:*  budgets:*   ecr:*
+states:*      lambda:*      dynamodb:*  bedrock:InvokeModel
+logs:*        ec2:* (VPC/SG management)
 ce:GetCostAndUsage (for check-costs.py)
 ```
 
@@ -106,54 +102,47 @@ tofu init -backend-config=backend.hcl
 tofu apply
 ```
 
-### 3. Build and Push the Lifecycle Lambda
+### 3. Build and Push Container Images
 
 ```bash
 ./scripts/build-lambda.sh
+./scripts/build-gateway-image.sh
+./scripts/build-searxng-image.sh
 ```
 
-### 4. Bake the Golden Snapshot
-
-```bash
-./scripts/bake-snapshot.sh
-```
-
-Bake once before adding your first agent. Re-bake when system packages or base playbooks change. First bake takes ~15 minutes; subsequent bakes are incremental (start from the previous snapshot) and take ~10 minutes. See [docs/golden-snapshot.md](docs/golden-snapshot.md).
-
-### 5. Add Your First Agent
+### 4. Add Your First Agent
 
 ```bash
 ./scripts/add-agent.sh
 ```
 
-Prompts for client name, agent name, channel type, and bot credentials. The script invokes Step Functions which writes the agent config to SSM and triggers the Lifecycle Lambda — boot-to-ready takes ~8 minutes.
+Prompts for client name, agent name, channel type, and bot credentials. The script invokes Step Functions which writes the agent config to SSM and triggers the Lifecycle Lambda.
 
-Verify the agent is provisioned and running:
+Verify the agent is running:
 
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "checkboot"
-./scripts/ssm-run.sh --slug <client>-<agent> "checkclaw"
+aws ecs describe-services --cluster clawless --services clawless-<client>-<agent> \
+  --query 'services[0].{status:status,desired:desiredCount,running:runningCount}' \
+  --region us-east-1
 ```
 
 ---
 
 ## Daily Operations
 
-### Run a command on an instance
-
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "<command>"
-```
-
-Each instance has convenience aliases: `checkclaw` (service status + recent logs), `checkboot` (provision status + cloud-init log), and `reprovision` (pull latest playbooks from git and re-run).
-
-### Add / remove / pause / resume
+### Add / remove / sleep / wake
 
 ```bash
 ./scripts/add-agent.sh                                  # interactive prompts
-./scripts/remove-agent.sh <client-slug> <agent-slug>    # full teardown
-./scripts/pause-agent.sh <client-slug> <agent-slug>     # snapshot + destroy (~2 min)
-./scripts/resume-agent.sh <client-slug> <agent-slug>    # restore from snapshot (~3 min to first message)
+./scripts/remove-agent.sh <client-slug> <agent-slug>    # archive workspace + full teardown
+./scripts/sleep-agent.sh <client-slug>-<agent-slug>     # ECS desired=0 (~5s to dark)
+./scripts/wake-agent.sh <client-slug>-<agent-slug>      # ECS desired=1 (~2 min to first message)
+```
+
+### Check logs
+
+```bash
+aws logs tail /ecs/clawless-<client>-<agent> --since 1h --region us-east-1
 ```
 
 ### Check costs
@@ -161,14 +150,6 @@ Each instance has convenience aliases: `checkclaw` (service status + recent logs
 ```bash
 python3 scripts/check-costs.py 7    # Last 7 days
 ```
-
-### Update playbooks on a running instance
-
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "reprovision"
-```
-
-Pulls the latest Ansible from git and re-runs client provisioning.
 
 ### Deploy infrastructure changes
 
@@ -185,10 +166,10 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 | Topic | Description |
 |-------|-------------|
 | [docs/versioning.md](docs/versioning.md) | How `/clawless/version` controls Lambda behavior |
-| [docs/golden-snapshot.md](docs/golden-snapshot.md) | Two-phase provisioning, what's baked vs. configured at boot |
 | [docs/lifecycle.md](docs/lifecycle.md) | Step Functions → SSM + DynamoDB → Lambda flow, per-slug ownership, race handling |
-| [docs/credentials.md](docs/credentials.md) | Credential delivery, `credential_process`, gateway tokens, IMDS workaround |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Checking services, broken sessions, re-provisioning, Lambda debugging |
+| [docs/credentials.md](docs/credentials.md) | Task roles, credential_process workaround, gateway tokens |
+| [docs/backups.md](docs/backups.md) | S3 workspace sync, retention, restore procedures |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | ECS status, CloudWatch logs, broken sessions, Lambda debugging |
 
 ---
 

@@ -1,59 +1,50 @@
 # Troubleshooting
 
-## Instance status
+## Task status
 
-**Check if provisioned:**
+**Check if the ECS service is running:**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "ls -la /home/ubuntu/.openclaw/.provisioned"
+aws ecs describe-services --cluster clawless --services clawless-<client>-<agent> \
+  --query 'services[0].{status:status,desired:desiredCount,running:runningCount}' \
+  --region us-east-1
 ```
 
-**View provision logs:**
+**View recent task events (scheduling failures, OOM, etc.):**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "cat /var/log/cloud-init-output.log"
+aws ecs describe-services --cluster clawless --services clawless-<client>-<agent> \
+  --query 'services[0].events[:5]' --region us-east-1
 ```
 
-## OpenClaw service
+## Container logs
 
-The gateway runs as a user-level systemd service under the `ubuntu` user:
+Gateway logs go to CloudWatch at `/ecs/clawless-<client>-<agent>`:
 
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user status openclaw-gateway"
+aws logs tail /ecs/clawless-<client>-<agent> --since 1h --region us-east-1
 ```
 
+**Follow logs in real time:**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) journalctl --user-unit openclaw-gateway -n 50"
-```
-
-Or use the `checkclaw` alias if logged in via SSM session:
-```bash
-checkclaw
+aws logs tail /ecs/clawless-<client>-<agent> --follow --region us-east-1
 ```
 
 ## Broken sessions
 
-If OpenClaw fails with "conversation must start with user message" or "user messages cannot contain reasoning content", the session history is corrupted:
+If OpenClaw fails with "conversation must start with user message" or "user messages cannot contain reasoning content", the session history is corrupted. Force a new deployment to start from the last synced workspace state:
 
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "rm -f /home/ubuntu/.openclaw/agents/main/sessions/*.jsonl && \
-   echo '{}' > /home/ubuntu/.openclaw/agents/main/sessions/sessions.json && \
-   sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/\$(id -u ubuntu) systemctl --user restart openclaw-gateway"
+aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
+  --force-new-deployment --region us-east-1
 ```
 
-## Backup
+If sessions keep corrupting, clear them from S3 before the next boot:
 
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "systemctl status clawless-backup.timer"
+aws s3 rm s3://clawless-backups-<account>/agents/<client>/<agent>/workspace/.openclaw/agents/main/sessions/ \
+  --recursive --region us-east-1
 ```
 
-## SearXNG
-
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "systemctl status searxng && curl -s http://127.0.0.1:8080/search?q=test&format=json | head -c 200"
-```
+Then force a new deployment as above.
 
 ## Lifecycle Lambda
 
@@ -67,32 +58,20 @@ aws logs tail /aws/lambda/clawless-lifecycle --since 1h --region us-east-1
 aws ssm get-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
 ```
 
-**Clear error flag and retry** (pause then resume to trigger the lifecycle Lambda):
+**Clear error flag and retry:**
 ```bash
 aws ssm delete-parameter --name "/clawless/clients/<client>/<agent>/error" --region us-east-1
-./scripts/pause-agent.sh <client> <agent>
-./scripts/resume-agent.sh <client> <agent>
+./scripts/wake-agent.sh <client>-<agent>
 ```
 
 ## Credentials
 
-**Verify credential_process works on an instance:**
+**Verify the task role is working (from container logs):**
+
+Look for `install_aws_creds: credential_process wired at ~/.aws/config` in the boot logs. If absent, the `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` env var was not available at boot.
+
+**Force a fresh task (picks up any IAM policy changes):**
 ```bash
-./scripts/ssm-run.sh --slug <client>-<agent> \
-  "sudo /usr/local/sbin/clawless-creds-helper | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"Expiration\"])'"
+aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
+  --force-new-deployment --region us-east-1
 ```
-
-**Check if IMDS is disabled:**
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "grep EC2_METADATA /etc/openclaw/openclaw.env"
-```
-
-## Re-provisioning a running instance
-
-If you need to re-run Ansible on a running instance after pushing playbook changes:
-
-```bash
-./scripts/ssm-run.sh --slug <client>-<agent> "reprovision"
-```
-
-The `reprovision` alias clones the repo at the `/clawless/version` ref and re-runs `provision-client.yml` with the client vars from `/opt/clawless/client-vars.json`.

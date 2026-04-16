@@ -2,7 +2,7 @@
 
 Shared SearXNG service for all clawless agents. One function, not one per
 agent — SearXNG is stateless request/response, so Lambda is a natural fit and
-replaces the Lightsail-era "SearXNG on every VPS" pattern.
+replaces per-agent SearXNG processes.
 
 ## How it works
 

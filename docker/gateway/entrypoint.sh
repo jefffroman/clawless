@@ -135,7 +135,7 @@ lock_config() {
 wake_greet() {
   # Post-boot proactive message. If a wake message is queued in DynamoDB,
   # replay it via the openclaw CLI; otherwise send a default "Hello <name>".
-  # Mirrors the Lightsail clawless-wake-greet.j2 contract.
+  # Sends a greeting or queued message via the openclaw CLI.
   # Runs in the background; all failures are non-fatal.
   if [ -z "${WAKE_MESSAGES_TABLE:-}" ]; then
     log "wake-greet: WAKE_MESSAGES_TABLE unset — skipping"
@@ -146,8 +146,8 @@ wake_greet() {
     return 0
   fi
 
-  # Peer id comes from OPENCLAW_CHANNEL_CONFIG.allowFrom[0] — same source the
-  # Lightsail script pulled out of SSM. No peer → nothing to deliver to.
+  # Peer id comes from OPENCLAW_CHANNEL_CONFIG.allowFrom[0].
+  # No peer → nothing to deliver to.
   local peer_id=""
   if [ -n "${OPENCLAW_CHANNEL_CONFIG:-}" ]; then
     peer_id=$(printf '%s' "$OPENCLAW_CHANNEL_CONFIG" | python3 -c 'import sys,json

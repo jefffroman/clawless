@@ -41,13 +41,9 @@ MCP_SERVERS = {}
 # access (the "messaging" profile trap — see openclaw issue #33225).
 TOOLS_BLOCK = {"profile": "full"}
 
-# SearXNG connection details — used by the skills.entries.searxng config block.
-# Prefer SEARXNG_URL (full URL, e.g. a Lambda function URL). Fall back to
-# host+port for legacy Lightsail instances where SearXNG runs on the host
-# (sandbox containers use extraHosts mapping host.docker.internal → host-gateway).
-SEARXNG_HOST = os.environ.get("SEARXNG_HOST", "host.docker.internal")
-SEARXNG_PORT = os.environ.get("SEARXNG_PORT", "8080")
-SEARXNG_URL_OVERRIDE = os.environ.get("SEARXNG_URL", "").strip()
+# SearXNG URL — injected by the task definition, points at the shared SearXNG
+# Lambda Function URL.
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "").strip()
 
 # Per-peer session isolation: each person who DMs the bot gets their own
 # conversation thread. Safe default given dmPolicy: "open" on the Telegram channel.
@@ -77,7 +73,7 @@ else:
             "image": "openclaw-sandbox-common:bookworm-slim",
             "network": "bridge",
             "env": {
-                "SEARXNG_URL": SEARXNG_URL_OVERRIDE or f"http://{SEARXNG_HOST}:{SEARXNG_PORT}",
+                "SEARXNG_URL": SEARXNG_URL,
             },
             "binds": [
                 "/usr/local/lib/node_modules/openclaw/skills:/usr/local/lib/node_modules/openclaw/skills:ro",
@@ -130,12 +126,10 @@ def patch_config():
     defaults["sandbox"].get("docker", {}).pop("user", None)
     print("sandbox patched: mode=all, user=auto")
 
-    # SearXNG skill: enable and set URL. On Fargate, SEARXNG_URL points at a
-    # shared Lambda function URL; on Lightsail it's built from host+port.
-    searxng_url = SEARXNG_URL_OVERRIDE or f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
+    # SearXNG skill: enable and set URL (shared Lambda Function URL).
     skills = config.setdefault("skills", {}).setdefault("entries", {})
-    skills["searxng"] = {"enabled": True, "env": {"SEARXNG_URL": searxng_url}}
-    print(f"skills.entries.searxng patched: SEARXNG_URL={searxng_url}")
+    skills["searxng"] = {"enabled": True, "env": {"SEARXNG_URL": SEARXNG_URL}}
+    print(f"skills.entries.searxng patched: SEARXNG_URL={SEARXNG_URL}")
 
     skills["sleep"] = {"enabled": True}
     print("skills.entries.sleep patched: enabled")
