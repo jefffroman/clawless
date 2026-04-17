@@ -1,0 +1,6 @@
+{
+  "name": "clawless-memory",
+  "version": "0.2.0",
+  "description": "Context engine plugin: 3-layer memory retrieval (Markdown + ChromaDB + NetworkX) via before_prompt_build",
+  "main": "index.js"
+}

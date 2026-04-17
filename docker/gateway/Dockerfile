@@ -28,9 +28,11 @@ RUN npm install -g openclaw@latest
 RUN userdel --remove node 2>/dev/null || true \
     && useradd --create-home --home-dir /home/openclaw --uid 1000 --shell /bin/bash openclaw
 
-# Memory system venv: chromadb + sentence-transformers + networkx + rank-bm25.
-# Baked into the image at a fixed path so it doesn't have to round-trip through
-# the S3 workspace sync. Scripts (indexer/search/auto_retrieve) live alongside.
+# Memory system venv: chromadb + sentence-transformers + networkx + rank-bm25
+# for the retrieval pipeline, plus aiohttp + pyyaml for the long-running memory
+# server. Baked into the image at a fixed path so it doesn't have to
+# round-trip through the S3 workspace sync. Scripts (memory_server / indexer /
+# search / auto_retrieve) live alongside.
 RUN mkdir -p /opt/clawless/memory /opt/clawless/bin \
     && python3 -m venv /opt/clawless/memory/venv \
     && /opt/clawless/memory/venv/bin/pip install --no-cache-dir --upgrade pip \
@@ -38,14 +40,22 @@ RUN mkdir -p /opt/clawless/memory /opt/clawless/bin \
          --index-url https://download.pytorch.org/whl/cpu \
          torch \
     && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
-         chromadb sentence-transformers networkx rank-bm25
+         chromadb sentence-transformers networkx rank-bm25 aiohttp pyyaml
 
 COPY docker/gateway/files/indexer.py /opt/clawless/bin/indexer.py
 COPY docker/gateway/files/search.py /opt/clawless/bin/search.py
 COPY docker/gateway/files/auto_retrieve.py /opt/clawless/bin/auto_retrieve.py
+COPY docker/gateway/files/memory_server.py /opt/clawless/bin/memory_server.py
 COPY docker/gateway/files/configure_openclaw.py /usr/local/bin/configure-openclaw
 RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
     && chown -R openclaw:openclaw /opt/clawless
+
+# Per-container memory data (ChromaDB + BM25 corpus + graph). Ephemeral: the
+# memory_server rebuilds it at boot from the workspace's MEMORY.md / memory/.
+# Owned by openclaw so the server can write without running as root.
+RUN mkdir -p /var/lib/clawless-memory \
+    && chown openclaw:openclaw /var/lib/clawless-memory \
+    && chmod 0700 /var/lib/clawless-memory
 
 # Baseline openclaw.json baked into the image. At boot the entrypoint copies
 # this to /var/lib/openclaw/openclaw.json (root-owned, 0644) and configure-openclaw
@@ -61,6 +71,15 @@ RUN mkdir -p /opt/openclaw /var/lib/openclaw \
 COPY docker/gateway/files/openclaw.baseline.json /opt/openclaw/openclaw.baseline.json
 RUN chown root:root /opt/openclaw/openclaw.baseline.json \
     && chmod 0644 /opt/openclaw/openclaw.baseline.json
+
+# Context engine plugin: baked outside $HOME so the agent's file tools can't
+# reach or modify it. configure-openclaw points plugins.load.paths here.
+# The plugin POSTs every incoming prompt to the memory server and prepends
+# retrieved context to the agent's system prompt.
+RUN mkdir -p /opt/openclaw/extensions/clawless-memory
+COPY docker/gateway/plugin/ /opt/openclaw/extensions/clawless-memory/
+RUN chown -R root:root /opt/openclaw/extensions \
+    && chmod -R a+rX /opt/openclaw/extensions
 
 # Clawless-managed skills bundled into openclaw's skill dir.
 # - sleep: self-pause via lifecycle SFN (sets /active=false, triggers Lambda)

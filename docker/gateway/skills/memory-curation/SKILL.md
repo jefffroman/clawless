@@ -5,7 +5,7 @@ description: Curate your long-term memory in MEMORY.md and dated archives under 
 
 # Memory Curation
 
-Your memory lives in Markdown files. MEMORY.md is the working set — what you need for day-to-day context. `memory/YYYY-MM-DD.md` files are the archive — older knowledge that's still recoverable but not cluttering your active context. The vector index (L2/L3) is rebuilt automatically from MEMORY.md every 5 minutes; you don't manage it directly.
+Your memory lives in Markdown files. MEMORY.md is the working set — what you need for day-to-day context. `memory/YYYY-MM-DD.md` files are the archive — older knowledge that's still recoverable but not cluttering your active context. The vector index (L2/L3) is rebuilt automatically by the gateway's memory server whenever your L1 files change; you don't manage it directly.
 
 ## When to Curate
 
@@ -21,7 +21,7 @@ Your memory lives in Markdown files. MEMORY.md is the working set — what you n
 2. Place new knowledge in the appropriate section (Projects, Key Lessons, Architecture, Blockers)
 3. Write concise bullets, not prose — every token costs context window
 4. Update the **Keyword Index** at the top with new terms and the section they appear in
-5. Don't run `indexer.py` manually — the systemd timer picks up changes within 5 minutes
+5. Don't try to reindex manually — the gateway's memory server picks up changes on its next poll (default every 5 minutes)
 
 ### What to Save
 
@@ -76,7 +76,7 @@ Keep entries alphabetical. Remove entries when their section is deleted and no a
 
 ## Rules
 
-- Never edit files in `vector_memory/` — that directory is managed by the indexer
+- Never try to edit the vector index directly — it's managed by the memory server and rebuilt from your L1 files
 - Never delete from MEMORY.md without archiving first
 - Never summarize when archiving — copy the full content so nothing is lost
 - Always update the Keyword Index when you add or archive a section

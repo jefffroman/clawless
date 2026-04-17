@@ -25,7 +25,10 @@
 #                              (default: openclaw gateway)
 #   WAKE_MESSAGES_TABLE      — DynamoDB table polled at boot for a queued
 #                              wake message; unset disables wake-greet
-#   MEMORY_REINDEX_INTERVAL  — seconds between indexer runs (default 300)
+#   MEMORY_REINDEX_INTERVAL  — seconds between reindex checks (default 300)
+#   MEMORY_SERVER_URL        — where the context-engine plugin and reindex
+#                              loop reach the memory server
+#                              (default http://127.0.0.1:3271)
 set -euo pipefail
 
 : "${AGENT_SLUG:?AGENT_SLUG is required}"
@@ -35,6 +38,7 @@ set -euo pipefail
 : "${OPENCLAW_CONFIG_PATH:=/var/lib/openclaw/openclaw.json}"
 : "${OPENCLAW_BASELINE_PATH:=/opt/openclaw/openclaw.baseline.json}"
 : "${MEMORY_REINDEX_INTERVAL:=300}"
+: "${MEMORY_SERVER_URL:=http://127.0.0.1:3271}"
 
 BACKUP_URI="s3://${BACKUP_BUCKET}/agents/${AGENT_SLUG}/workspace/"
 
@@ -232,19 +236,37 @@ else:
     || log "wake-greet: openclaw agent call failed (non-fatal)"
 }
 
-memory_reindex_loop() {
-  # Background loop: rebuild the ChromaDB index from MEMORY.md every
-  # MEMORY_REINDEX_INTERVAL seconds. Runs as openclaw so output files are
-  # agent-readable. All failures are logged but non-fatal.
-  local indexer=/opt/clawless/bin/indexer.py
-  if [ ! -x "$indexer" ]; then
-    log "reindex: indexer not found at ${indexer} — skipping"
+memory_server_start() {
+  # Launch the long-running aiohttp memory server. Runs as openclaw so its
+  # data dir (/var/lib/clawless-memory, chown'd in Dockerfile) is writable.
+  # Warms SentenceTransformer + ChromaDB and does an initial reindex before
+  # /health returns ok, so by the time the context-engine plugin fires on
+  # the first turn the index is ready.
+  local server=/opt/clawless/bin/memory_server.py
+  if [ ! -r "$server" ]; then
+    log "memory-server: not found at ${server} — skipping"
     return 0
   fi
+  log "memory-server: starting"
+  # Send stdout/stderr to the container's log stream (CloudWatch).
+  gosu openclaw:openclaw env \
+      AGENT_SLUG="$AGENT_SLUG" \
+      WORKSPACE_DIR="$WORKSPACE_DIR" \
+      MEMORY_DATA_DIR="/var/lib/clawless-memory" \
+      /opt/clawless/memory/venv/bin/python "$server" >&2 &
+  memory_server_pid=$!
+}
+
+memory_reindex_loop() {
+  # Background loop: ask the memory server to rebuild its index whenever the
+  # workspace source files have changed. The server owns all ChromaDB writes
+  # (single writer, no SQLite contention). All failures are non-fatal.
   while true; do
     sleep "$MEMORY_REINDEX_INTERVAL"
-    gosu openclaw:openclaw /opt/clawless/memory/venv/bin/python "$indexer" >/dev/null 2>&1 \
-      || log "reindex: run failed (non-fatal)"
+    curl -sf -X POST "${MEMORY_SERVER_URL}/reindex" \
+        -H 'Content-Type: application/json' \
+        -d '{}' >/dev/null 2>&1 \
+      || log "reindex: POST /reindex failed (non-fatal)"
   done
 }
 
@@ -282,6 +304,7 @@ except: print("")' 2>/dev/null || true)
 
 gateway_pid=""
 reindex_pid=""
+memory_server_pid=""
 shutdown() {
   log "SIGTERM received"
   if [ -n "$reindex_pid" ] && kill -0 "$reindex_pid" 2>/dev/null; then
@@ -290,6 +313,9 @@ shutdown() {
   if [ -n "$gateway_pid" ] && kill -0 "$gateway_pid" 2>/dev/null; then
     kill -TERM "$gateway_pid" 2>/dev/null || true
     wait "$gateway_pid" 2>/dev/null || true
+  fi
+  if [ -n "$memory_server_pid" ] && kill -0 "$memory_server_pid" 2>/dev/null; then
+    kill -TERM "$memory_server_pid" 2>/dev/null || true
   fi
   set_telegram_webhook
   sync_up
@@ -302,6 +328,12 @@ sync_down
 install_aws_creds
 install_config
 configure-openclaw
+
+# Start the memory server first so it has time to warm and index in parallel
+# with the gateway's startup; by the time the first turn fires, /retrieve
+# is ready. If it never comes up, the plugin falls back to a 2s timeout per
+# turn and the agent continues without retrieved context.
+memory_server_start
 
 log "starting openclaw: ${OPENCLAW_CMD}"
 gosu openclaw:openclaw $OPENCLAW_CMD &
@@ -317,6 +349,9 @@ exit_code=$?
 log "openclaw exited with ${exit_code}"
 if [ -n "$reindex_pid" ] && kill -0 "$reindex_pid" 2>/dev/null; then
   kill -TERM "$reindex_pid" 2>/dev/null || true
+fi
+if [ -n "$memory_server_pid" ] && kill -0 "$memory_server_pid" 2>/dev/null; then
+  kill -TERM "$memory_server_pid" 2>/dev/null || true
 fi
 sync_up
 exit "$exit_code"

@@ -33,12 +33,16 @@ resource "aws_ecr_lifecycle_policy" "gateway" {
 
 resource "null_resource" "gateway_image" {
   triggers = {
-    dockerfile    = filemd5("${path.module}/../docker/gateway/Dockerfile")
-    entrypoint    = filemd5("${path.module}/../docker/gateway/entrypoint.sh")
-    configurator  = filemd5("${path.module}/../docker/gateway/files/configure_openclaw.py")
-    indexer       = filemd5("${path.module}/../docker/gateway/files/indexer.py")
-    search        = filemd5("${path.module}/../docker/gateway/files/search.py")
-    auto_retrieve = filemd5("${path.module}/../docker/gateway/files/auto_retrieve.py")
+    dockerfile      = filemd5("${path.module}/../docker/gateway/Dockerfile")
+    entrypoint      = filemd5("${path.module}/../docker/gateway/entrypoint.sh")
+    configurator    = filemd5("${path.module}/../docker/gateway/files/configure_openclaw.py")
+    indexer         = filemd5("${path.module}/../docker/gateway/files/indexer.py")
+    search          = filemd5("${path.module}/../docker/gateway/files/search.py")
+    auto_retrieve   = filemd5("${path.module}/../docker/gateway/files/auto_retrieve.py")
+    memory_server   = filemd5("${path.module}/../docker/gateway/files/memory_server.py")
+    plugin_index    = filemd5("${path.module}/../docker/gateway/plugin/index.js")
+    plugin_manifest = filemd5("${path.module}/../docker/gateway/plugin/openclaw.plugin.json")
+    plugin_pkg      = filemd5("${path.module}/../docker/gateway/plugin/package.json")
   }
 
   provisioner "local-exec" {

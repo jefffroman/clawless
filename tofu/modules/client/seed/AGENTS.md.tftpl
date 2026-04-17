@@ -4,19 +4,21 @@
 
 This agent uses a three-layer memory system. **MEMORY.md is the source of truth** — read it for identity, mission, projects, and operational context.
 
-| Layer | Tech | Location | Purpose |
-|-------|------|----------|---------|
+| Layer | Tech | Source | Purpose |
+|-------|------|--------|---------|
 | L1 | Markdown | MEMORY.md, memory/*.md | Human-readable source of truth |
-| L2 | ChromaDB + BM25 + RRF | vector_memory/ | Hybrid semantic + keyword retrieval |
-| L3 | NetworkX | memory_graph.json | Relationship traversal |
+| L2 | ChromaDB + BM25 + RRF | rebuilt from L1 | Hybrid semantic + keyword retrieval |
+| L3 | NetworkX graph | rebuilt from L1 | Relationship traversal |
 
 ## How to Use Memory
 
 - Read `MEMORY.md` first for current context
-- Query L2 (`vector_memory/search.py`) before answering memory questions
+- L2/L3 retrieval is **automatic**: the context-engine plugin hits your
+  memory server on every user turn and prepends the top matches to your
+  prompt — you don't need to query it yourself
 - Use the **memory-curation** skill to save learnings and maintain MEMORY.md
-- After editing any L1 file, re-index: `vector_memory/indexer.py`
-- The indexer runs automatically every 5 minutes in the gateway
+- You don't re-index manually. The gateway's memory server watches your L1
+  files and rebuilds L2/L3 whenever they change
 
 ## Key Files
 

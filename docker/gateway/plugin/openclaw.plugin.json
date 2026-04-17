@@ -1,0 +1,15 @@
+{
+  "id": "clawless-memory",
+  "name": "Clawless 3-Layer Memory",
+  "description": "Retrieves from the 3-layer memory system (Markdown + ChromaDB/BM25 + knowledge graph) and prepends context via the before_prompt_build hook.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "serverUrl": { "type": "string", "default": "http://127.0.0.1:3271" },
+      "topN":      { "type": "number", "default": 5 },
+      "compact":   { "type": "boolean", "default": true },
+      "timeoutMs": { "type": "number", "default": 2000 }
+    },
+    "additionalProperties": false
+  }
+}
