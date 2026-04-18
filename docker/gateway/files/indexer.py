@@ -1,5 +1,5 @@
 import os, re, json, hashlib, chromadb, networkx as nx
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
 from datetime import datetime, timezone
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -49,16 +49,15 @@ def md5(path):
 
 def index_memory():
     print("Indexing MEMORY.md...")
-    model   = SentenceTransformer(MODEL_NAME)
-    client  = chromadb.PersistentClient(path=VECTOR_DB)
-    col     = client.get_or_create_collection("memory_chunks")
-    chunks  = parse_markdown(MEMORY_FILE)
+    embedder = embedding_functions.DefaultEmbeddingFunction()
+    client   = chromadb.PersistentClient(path=VECTOR_DB)
+    col      = client.get_or_create_collection("memory_chunks", embedding_function=embedder)
+    chunks   = parse_markdown(MEMORY_FILE)
 
     ids        = [f"mem_{i}" for i in range(len(chunks))]
     documents  = [c["content"] for c in chunks]
     metadatas  = [c["metadata"] for c in chunks]
-    embeddings = model.encode(documents).tolist()
-    col.upsert(ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas)
+    col.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
     existing = col.count()
     if existing > len(chunks):

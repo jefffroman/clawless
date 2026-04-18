@@ -1,54 +1,67 @@
 FROM node:22-slim
 
-ARG AWSCLI_VERSION=2.17.0
-
+# Runtime-only apt deps. Build tools (build-essential, python3-dev) are
+# installed + purged inside the pip-install RUN below so they don't bloat
+# the image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip git python3 python3-minimal python3-venv tini gosu \
-      build-essential python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+      ca-certificates curl git python3 python3-minimal python3-venv tini gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+    && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
 
-RUN arch=$(dpkg --print-architecture) \
-    && case "$arch" in \
-         arm64) awscli_arch=aarch64 ;; \
-         amd64) awscli_arch=x86_64 ;; \
-         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${awscli_arch}-${AWSCLI_VERSION}.zip" -o /tmp/awscli.zip \
-    && unzip -q /tmp/awscli.zip -d /tmp \
-    && /tmp/aws/install \
-    && rm -rf /tmp/awscli.zip /tmp/aws
+# AWS CLI v1 (pip) instead of v2 (self-contained bundle). Saves ~70 MB
+# uncompressed / ~25 MB compressed on pull — meaningful for wake time since
+# Fargate re-pulls the image on every cold start. Our in-container usage is
+# frozen-stable commands only (s3 sync/ls, ssm get/put-parameter,
+# dynamodb get/delete-item, stepfunctions start-execution) that behave
+# identically across v1 and v2, so v1's feature freeze costs us nothing.
+# Installed in its own venv to avoid polluting the system Python that the
+# memory venv and other scripts depend on.
+RUN python3 -m venv /opt/awscli \
+    && /opt/awscli/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/awscli/bin/pip install --no-cache-dir awscli \
+    && ln -s /opt/awscli/bin/aws /usr/local/bin/aws
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | \
       env UV_INSTALL_DIR=/usr/local/bin UV_UNMANAGED_INSTALL=1 sh
 
-RUN npm install -g openclaw@latest
+RUN npm install -g openclaw@latest \
+    && npm cache clean --force
 
 # node:22-slim ships with a `node` user at UID 1000 — reclaim the UID for
 # openclaw so it matches S3 Files access point defaults (UID/GID 1000).
 RUN userdel --remove node 2>/dev/null || true \
     && useradd --create-home --home-dir /home/openclaw --uid 1000 --shell /bin/bash openclaw
 
-# Memory system venv: chromadb + sentence-transformers + networkx + rank-bm25
-# for the retrieval pipeline, plus aiohttp + pyyaml for the long-running memory
-# server. Baked into the image at a fixed path so it doesn't have to
-# round-trip through the S3 workspace sync. Scripts (memory_server / indexer /
-# search / auto_retrieve) live alongside.
-RUN mkdir -p /opt/clawless/memory /opt/clawless/bin \
+# Memory system venv: chromadb + networkx + rank-bm25 for the retrieval
+# pipeline, plus aiohttp + pyyaml for the long-running memory server.
+# Embeddings come from chromadb's bundled DefaultEmbeddingFunction (ONNX
+# runtime + all-MiniLM-L6-v2) — dropping sentence-transformers + torch saves
+# ~300 MB compressed. Build tools are installed, used for native extensions
+# (hnswlib etc.), then purged in the same layer. chown is done at the end of
+# the same RUN to avoid a duplicate 1.5GB layer from `chown -R` later
+# (classic Docker footgun).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential python3-dev \
+    && mkdir -p /opt/clawless/memory /opt/clawless/bin \
     && python3 -m venv /opt/clawless/memory/venv \
     && /opt/clawless/memory/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
-         --index-url https://download.pytorch.org/whl/cpu \
-         torch \
-    && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
-         chromadb sentence-transformers networkx rank-bm25 aiohttp pyyaml
-
-COPY docker/gateway/files/indexer.py /opt/clawless/bin/indexer.py
-COPY docker/gateway/files/search.py /opt/clawless/bin/search.py
-COPY docker/gateway/files/auto_retrieve.py /opt/clawless/bin/auto_retrieve.py
-COPY docker/gateway/files/memory_server.py /opt/clawless/bin/memory_server.py
-COPY docker/gateway/files/configure_openclaw.py /usr/local/bin/configure-openclaw
-RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py \
+         chromadb networkx rank-bm25 aiohttp pyyaml \
+    && apt-get purge -y --auto-remove build-essential python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && find /opt/clawless/memory/venv -type d -name '__pycache__' -exec rm -rf {} + \
+    && find /opt/clawless/memory/venv -type f -name '*.pyc' -delete \
+    && find /opt/clawless/memory/venv -type d \( -name 'tests' -o -name 'test' \) -prune -exec rm -rf {} + \
     && chown -R openclaw:openclaw /opt/clawless
+
+COPY --chown=openclaw:openclaw docker/gateway/files/indexer.py        /opt/clawless/bin/indexer.py
+COPY --chown=openclaw:openclaw docker/gateway/files/search.py         /opt/clawless/bin/search.py
+COPY --chown=openclaw:openclaw docker/gateway/files/auto_retrieve.py  /opt/clawless/bin/auto_retrieve.py
+COPY --chown=openclaw:openclaw docker/gateway/files/memory_server.py  /opt/clawless/bin/memory_server.py
+COPY docker/gateway/files/configure_openclaw.py                       /usr/local/bin/configure-openclaw
+RUN chmod +x /usr/local/bin/configure-openclaw /opt/clawless/bin/*.py
 
 # Per-container memory data (ChromaDB + BM25 corpus + graph). Ephemeral: the
 # memory_server rebuilds it at boot from the workspace's MEMORY.md / memory/.
@@ -90,9 +103,10 @@ RUN chmod -R a+rX /usr/local/lib/node_modules/openclaw/skills/sleep \
                   /usr/local/lib/node_modules/openclaw/skills/memory-curation \
                   /usr/local/lib/node_modules/openclaw/skills/searxng
 
-# Warm the sentence-transformers model cache as openclaw so it's owned correctly
-# and available without a cold download at runtime.
-RUN su openclaw -c '/opt/clawless/memory/venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"all-MiniLM-L6-v2\")"'
+# Warm ChromaDB's bundled ONNX embedder so the ~80 MB all-MiniLM-L6-v2 tarball
+# is cached in the image rather than downloaded on every cold start. Run as
+# openclaw so $HOME/.cache/chroma is owned correctly.
+RUN su openclaw -c '/opt/clawless/memory/venv/bin/python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; DefaultEmbeddingFunction()([\"warm\"])"'
 
 COPY docker/gateway/entrypoint.sh /usr/local/bin/clawless-entrypoint
 RUN chmod +x /usr/local/bin/clawless-entrypoint

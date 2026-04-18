@@ -10,9 +10,11 @@
 set -euo pipefail
 
 REGION="us-east-1"
+VERBOSE="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --region) REGION="$2"; shift 2 ;;
+    --region)  REGION="$2"; shift 2 ;;
+    --verbose) VERBOSE="true"; shift 1 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -99,6 +101,20 @@ AGENT_VALUE="$(jq -cn \
   }')"
 
 AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
+
+# Write the verbose flag BEFORE invoking the lifecycle SFN so it's present
+# when the Fargate task boots and entrypoint.sh reads it. Writing after the
+# SFN call is a race: tofu-apply → ECS service → task boot can outrun the
+# local put-parameter on a warm Lambda.
+if [[ "$VERBOSE" == "true" ]]; then
+  echo "Setting verbose flag for this agent..."
+  aws ssm put-parameter \
+    --name "${AGENT_PARAM}/verbose" \
+    --type "String" \
+    --value "true" \
+    --overwrite \
+    --region "${REGION}" >/dev/null
+fi
 
 echo "Invoking Step Functions (SSM write + lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \

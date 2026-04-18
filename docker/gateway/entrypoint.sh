@@ -48,6 +48,20 @@ BACKUP_URI="s3://${BACKUP_BUCKET}/agents/${AGENT_SLUG}/workspace/"
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
+# Wake-time profiling. Each `phase` call records delta since the previous phase
+# and total since entrypoint start. Meant to be ripped out once we've tuned
+# boot — grep CloudWatch for `phase=` to collect numbers.
+PHASE_T0=$(date +%s.%N)
+PHASE_LAST=$PHASE_T0
+phase() {
+  local now delta total
+  now=$(date +%s.%N)
+  delta=$(awk -v a="$now" -v b="$PHASE_LAST" 'BEGIN{printf "%.2f", a-b}')
+  total=$(awk -v a="$now" -v b="$PHASE_T0" 'BEGIN{printf "%.2f", a-b}')
+  log "phase=$1 delta=${delta}s total=${total}s"
+  PHASE_LAST=$now
+}
+
 sync_down() {
   log "syncing workspace down from ${BACKUP_URI}"
   if ! aws s3 ls "$BACKUP_URI" >/dev/null 2>&1; then
@@ -281,6 +295,42 @@ memory_server_start() {
   memory_server_pid=$!
 }
 
+phase_watch_gateway() {
+  # Polls gateway /health at 1s cadence and logs when it first responds. Runs
+  # in the background so it can't block boot. Paired with phase_watch_memory.
+  local t0 now rel total elapsed=0
+  t0=$(date +%s.%N)
+  while ! curl -sf "http://127.0.0.1:18789/health" >/dev/null 2>&1; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    if [ "$elapsed" -ge 180 ]; then
+      log "phase=gateway_healthy timeout after 180s"
+      return 0
+    fi
+  done
+  now=$(date +%s.%N)
+  rel=$(awk -v a="$now" -v b="$t0" 'BEGIN{printf "%.2f", a-b}')
+  total=$(awk -v a="$now" -v b="$PHASE_T0" 'BEGIN{printf "%.2f", a-b}')
+  log "phase=gateway_healthy delta=${rel}s total=${total}s"
+}
+
+phase_watch_memory() {
+  local t0 now rel total elapsed=0
+  t0=$(date +%s.%N)
+  while ! curl -sf "${MEMORY_SERVER_URL}/health" >/dev/null 2>&1; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    if [ "$elapsed" -ge 180 ]; then
+      log "phase=memory_healthy timeout after 180s"
+      return 0
+    fi
+  done
+  now=$(date +%s.%N)
+  rel=$(awk -v a="$now" -v b="$t0" 'BEGIN{printf "%.2f", a-b}')
+  total=$(awk -v a="$now" -v b="$PHASE_T0" 'BEGIN{printf "%.2f", a-b}')
+  log "phase=memory_healthy delta=${rel}s total=${total}s"
+}
+
 memory_reindex_loop() {
   # Background loop: ask the memory server to rebuild its index whenever the
   # workspace source files have changed. The server owns all ChromaDB writes
@@ -348,11 +398,15 @@ shutdown() {
 }
 trap shutdown TERM INT
 
+phase "entrypoint_start"
 sync_down
+phase "sync_down_done"
 install_aws_creds
 load_verbose_flag
 install_config
+phase "config_installed"
 configure-openclaw
+phase "configure_openclaw_done"
 
 case "${OPENCLAW_VERBOSE:-}" in
   1|true|yes) OPENCLAW_CMD="${OPENCLAW_CMD} --verbose" ;;
@@ -363,11 +417,14 @@ esac
 # is ready. If it never comes up, the plugin falls back to a 2s timeout per
 # turn and the agent continues without retrieved context.
 memory_server_start
+phase_watch_memory &
 
 log "starting openclaw: ${OPENCLAW_CMD}"
 gosu openclaw:openclaw $OPENCLAW_CMD &
 gateway_pid=$!
+phase "openclaw_exec"
 
+phase_watch_gateway &
 wake_greet &
 lock_config &
 memory_reindex_loop &
