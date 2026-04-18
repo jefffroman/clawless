@@ -1,13 +1,16 @@
-FROM node:22-slim
+# syntax=docker/dockerfile:1
 
-# Runtime-only apt deps. Build tools (build-essential, python3-dev) are
-# installed + purged inside the pip-install RUN below so they don't bloat
-# the image.
+# ---------- Stage 1: builder ----------
+# Everything that needs compilers, pip caches, or npm intermediates is
+# built here. Nothing from this stage except explicitly-copied artifacts
+# survives into the runtime image, so build-time leftovers (apt metadata,
+# wheel extraction tmp, compiler toolchains) can't leak.
+FROM node:22-slim AS builder
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git python3 python3-minimal python3-venv tini gosu \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
-    && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
+      ca-certificates curl git python3 python3-venv \
+      build-essential python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # AWS CLI v1 (pip) instead of v2 (self-contained bundle). Saves ~70 MB
 # uncompressed / ~25 MB compressed on pull — meaningful for wake time since
@@ -19,42 +22,57 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # memory venv and other scripts depend on.
 RUN python3 -m venv /opt/awscli \
     && /opt/awscli/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/awscli/bin/pip install --no-cache-dir awscli \
-    && ln -s /opt/awscli/bin/aws /usr/local/bin/aws
+    && /opt/awscli/bin/pip install --no-cache-dir awscli
 
+# uv + uvx (SearXNG skill invokes `uv run ...` at turn time).
 RUN curl -LsSf https://astral.sh/uv/install.sh | \
       env UV_INSTALL_DIR=/usr/local/bin UV_UNMANAGED_INSTALL=1 sh
 
 RUN npm install -g openclaw@latest \
     && npm cache clean --force
 
+# Memory venv: chromadb + networkx + rank-bm25 for the retrieval pipeline,
+# plus aiohttp + pyyaml for the long-running memory server. Embeddings come
+# from chromadb's bundled DefaultEmbeddingFunction (ONNX runtime + all-
+# MiniLM-L6-v2) — dropping sentence-transformers + torch saves ~300 MB
+# compressed. Cleanup is in-stage because the whole venv directory gets
+# COPY'd to runtime verbatim; what we don't scrub here ships.
+RUN python3 -m venv /opt/clawless/memory/venv \
+    && /opt/clawless/memory/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
+         chromadb networkx rank-bm25 aiohttp pyyaml \
+    && find /opt/clawless/memory/venv -type d -name '__pycache__' -exec rm -rf {} + \
+    && find /opt/clawless/memory/venv -type f -name '*.pyc' -delete \
+    && find /opt/clawless/memory/venv -type d \( -name 'tests' -o -name 'test' \) -prune -exec rm -rf {} +
+
+
+# ---------- Stage 2: runtime ----------
+FROM node:22-slim
+
+# Runtime-only apt deps. No build-essential, no python3-dev, no pip.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git python3 python3-minimal python3-venv tini gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+    && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
+
 # node:22-slim ships with a `node` user at UID 1000 — reclaim the UID for
 # openclaw so it matches S3 Files access point defaults (UID/GID 1000).
 RUN userdel --remove node 2>/dev/null || true \
     && useradd --create-home --home-dir /home/openclaw --uid 1000 --shell /bin/bash openclaw
 
-# Memory system venv: chromadb + networkx + rank-bm25 for the retrieval
-# pipeline, plus aiohttp + pyyaml for the long-running memory server.
-# Embeddings come from chromadb's bundled DefaultEmbeddingFunction (ONNX
-# runtime + all-MiniLM-L6-v2) — dropping sentence-transformers + torch saves
-# ~300 MB compressed. Build tools are installed, used for native extensions
-# (hnswlib etc.), then purged in the same layer. chown is done at the end of
-# the same RUN to avoid a duplicate 1.5GB layer from `chown -R` later
-# (classic Docker footgun).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential python3-dev \
-    && mkdir -p /opt/clawless/memory /opt/clawless/bin \
-    && python3 -m venv /opt/clawless/memory/venv \
-    && /opt/clawless/memory/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/clawless/memory/venv/bin/pip install --no-cache-dir \
-         chromadb networkx rank-bm25 aiohttp pyyaml \
-    && apt-get purge -y --auto-remove build-essential python3-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && find /opt/clawless/memory/venv -type d -name '__pycache__' -exec rm -rf {} + \
-    && find /opt/clawless/memory/venv -type f -name '*.pyc' -delete \
-    && find /opt/clawless/memory/venv -type d \( -name 'tests' -o -name 'test' \) -prune -exec rm -rf {} + \
-    && chown -R openclaw:openclaw /opt/clawless
+# Pull installed artifacts from the builder. Each COPY lands a self-
+# contained tree (venvs, node_modules, single binaries) that works as-is
+# because the runtime base image is the same debian release as the builder.
+COPY --from=builder /opt/awscli                              /opt/awscli
+COPY --from=builder /usr/local/bin/uv                        /usr/local/bin/uv
+COPY --from=builder /usr/local/bin/uvx                       /usr/local/bin/uvx
+COPY --from=builder /usr/local/lib/node_modules/openclaw     /usr/local/lib/node_modules/openclaw
+RUN ln -s /opt/awscli/bin/aws                          /usr/local/bin/aws \
+    && ln -s ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
+
+COPY --from=builder --chown=openclaw:openclaw /opt/clawless  /opt/clawless
+RUN mkdir -p /opt/clawless/bin && chown openclaw:openclaw /opt/clawless/bin
 
 COPY --chown=openclaw:openclaw docker/gateway/files/indexer.py        /opt/clawless/bin/indexer.py
 COPY --chown=openclaw:openclaw docker/gateway/files/search.py         /opt/clawless/bin/search.py
