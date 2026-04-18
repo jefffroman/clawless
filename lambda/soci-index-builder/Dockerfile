@@ -1,29 +1,31 @@
 FROM public.ecr.aws/lambda/python:3.12
 
-ARG SOCI_VERSION=0.10.0
+ARG SOCI_VERSION=0.13.0
+ARG CRANE_VERSION=0.20.3
 
-# Containerd + runc (no Docker — Lambda has no daemon anyway). tar/gzip
-# needed to extract the soci release tarball. boto3 ships with the Python
-# base image but we pin anyway to avoid surprises.
-RUN dnf install -y containerd runc tar gzip findutils && dnf clean all
+# tar/gzip needed to extract release tarballs. crane + soci both ship as
+# single static Go binaries.
+RUN dnf install -y tar gzip && dnf clean all
 
-# Lambda's rootfs is read-only except /tmp. containerd 2.x has a hardcoded
-# /run/containerd path that --state doesn't fully override (some plugins
-# still write there). Pre-create it as a symlink into /tmp so containerd's
-# idempotent MkdirAll succeeds at runtime.
-RUN ln -s /tmp/containerd /run/containerd
+# crane: pulls/pushes OCI image layouts to/from registries. No daemon,
+# no containerd. Replaces skopeo (which isn't in AL2023 repos).
+RUN curl -fsSL \
+      "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_arm64.tar.gz" \
+      -o /tmp/crane.tar.gz \
+    && tar xzf /tmp/crane.tar.gz -C /usr/local/bin/ crane \
+    && chmod +x /usr/local/bin/crane \
+    && rm /tmp/crane.tar.gz
 
-# soci-snapshotter CLI. The release tarball layout varies across versions,
-# so extract + find rather than assuming a path.
+# soci-snapshotter CLI. v0.13.0+ supports `convert --standalone` which
+# produces a SOCI-v2 indexed image as a pure filesystem operation — no
+# containerd, no ctr, no runc. We only need the `soci` binary (ignore
+# soci-snapshotter-grpc, which is only for the runtime snapshotter).
 RUN curl -fsSL \
       "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-arm64.tar.gz" \
       -o /tmp/soci.tar.gz \
-    && mkdir -p /tmp/soci-extract \
-    && tar xzf /tmp/soci.tar.gz -C /tmp/soci-extract \
-    && find /tmp/soci-extract -type f -executable -name 'soci*' \
-         -exec mv {} /usr/local/bin/ \; \
-    && chmod +x /usr/local/bin/soci* \
-    && rm -rf /tmp/soci.tar.gz /tmp/soci-extract
+    && tar xzf /tmp/soci.tar.gz -C /usr/local/bin/ soci \
+    && chmod +x /usr/local/bin/soci \
+    && rm /tmp/soci.tar.gz
 
 RUN pip install --no-cache-dir boto3
 

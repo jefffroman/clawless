@@ -122,4 +122,9 @@ fi
 echo "SOCI build OK:"
 cat "$RESPONSE"
 echo
-echo "Done: ${ECR_REPO_URL}:latest @ $DIGEST"
+
+# The converted image has a NEW digest (SOCI v2 produces a new image, not
+# a sidecar artifact). Report that instead of the pre-SOCI candidate digest.
+CONVERTED_DIGEST=$(grep -o '"converted_digest":[[:space:]]*"[^"]*"' "$RESPONSE" \
+  | sed 's/.*"converted_digest":[[:space:]]*"\([^"]*\)"/\1/')
+echo "Done: ${ECR_REPO_URL}:latest @ ${CONVERTED_DIGEST:-$DIGEST}"

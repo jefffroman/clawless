@@ -110,9 +110,8 @@ resource "aws_lambda_function" "soci_builder" {
   timeout       = 600 # 10 min — SOCI build for ~700MB image is typically 60-120s
   memory_size   = 3008
 
-  # SOCI needs containerd's content store in /tmp. A 667 MB image + index +
-  # overhead comfortably fits in 4 GB, but we go 8 GB for headroom (and
-  # because larger /tmp scales alongside memory on Lambda).
+  # /tmp holds two OCI layouts: pre-SOCI pull (~700 MB) + post-SOCI convert
+  # output (~750 MB). 8 GB gives ample headroom as the image grows.
   ephemeral_storage {
     size = 8192
   }
