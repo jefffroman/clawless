@@ -166,6 +166,7 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 
 | Topic | Description |
 |-------|-------------|
+| [docs/ssm.md](docs/ssm.md) | Full SSM Parameter Store reference — paths, schemas, IAM scope |
 | [docs/versioning.md](docs/versioning.md) | How `/clawless/version` controls Lambda behavior |
 | [docs/lifecycle.md](docs/lifecycle.md) | Step Functions → SSM + DynamoDB → Lambda flow, per-slug ownership, race handling |
 | [docs/credentials.md](docs/credentials.md) | Task roles, credential_process workaround, gateway tokens |

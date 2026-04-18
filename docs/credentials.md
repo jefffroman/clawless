@@ -1,5 +1,7 @@
 # Credentials
 
+See [ssm.md](ssm.md) for the full SSM Parameter Store namespace, including IAM scope per principal.
+
 ## Overview
 
 | Credential | Where stored | Used by |

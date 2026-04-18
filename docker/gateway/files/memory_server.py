@@ -32,7 +32,14 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
 AGENT_SLUG    = os.environ.get("AGENT_SLUG", "").strip()
+# ChromaDB collection names must match [a-zA-Z0-9._-] — convert "client/agent"
+# to "client-agent" the same way ECS service names are sanitized.
+SLUG_SAFE     = AGENT_SLUG.replace("/", "-") or "default"
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", "/home/openclaw")
+# Memory source files live under .openclaw/workspace/ — that's what OpenClaw
+# treats as the agent's editable workspace. WORKSPACE_DIR is the container home.
+SOURCE_DIR    = os.environ.get("MEMORY_SOURCE_DIR",
+                               os.path.join(WORKSPACE_DIR, ".openclaw", "workspace"))
 DATA_ROOT     = os.environ.get("MEMORY_DATA_DIR", "/var/lib/clawless-memory")
 HOST          = os.environ.get("MEMORY_SERVER_HOST", "127.0.0.1")
 PORT          = int(os.environ.get("MEMORY_SERVER_PORT", "3271"))
@@ -70,12 +77,12 @@ ROOT_SOURCES = (
 def _source_paths():
     paths = []
     for name in ROOT_SOURCES:
-        p = os.path.join(WORKSPACE_DIR, name)
+        p = os.path.join(SOURCE_DIR, name)
         if os.path.exists(p):
             paths.append(p)
     for sub in ("memory", "reference"):
-        paths.extend(sorted(globmod.glob(os.path.join(WORKSPACE_DIR, sub, "*.md"))))
-    paths.extend(sorted(globmod.glob(os.path.join(WORKSPACE_DIR, "skills", "*", "SKILL.md"))))
+        paths.extend(sorted(globmod.glob(os.path.join(SOURCE_DIR, sub, "*.md"))))
+    paths.extend(sorted(globmod.glob(os.path.join(SOURCE_DIR, "skills", "*", "SKILL.md"))))
     return paths
 
 
@@ -120,21 +127,21 @@ def collect_sources():
     chunks = []
 
     for fname in ROOT_SOURCES:
-        fpath = os.path.join(WORKSPACE_DIR, fname)
+        fpath = os.path.join(SOURCE_DIR, fname)
         if os.path.exists(fpath):
             for c in parse_markdown(fpath):
                 c["metadata"]["source"] = fname
                 chunks.append(c)
 
     for sub in ("memory", "reference"):
-        for fpath in sorted(globmod.glob(os.path.join(WORKSPACE_DIR, sub, "*.md"))):
+        for fpath in sorted(globmod.glob(os.path.join(SOURCE_DIR, sub, "*.md"))):
             fname = os.path.basename(fpath)
             for c in parse_markdown(fpath):
                 c["metadata"]["source"] = f"{sub}/{fname}"
                 chunks.append(c)
 
     # Skills: index name + description from frontmatter only.
-    for skill_file in sorted(globmod.glob(os.path.join(WORKSPACE_DIR, "skills", "*", "SKILL.md"))):
+    for skill_file in sorted(globmod.glob(os.path.join(SOURCE_DIR, "skills", "*", "SKILL.md"))):
         skill_dir = os.path.basename(os.path.dirname(skill_file))
         fm = parse_frontmatter(skill_file)
         if fm.get("name") and fm.get("description"):
@@ -174,7 +181,9 @@ def _atomic_write_json(path, obj):
 
 
 def needs_reindex():
-    if not _source_paths():
+    paths = _source_paths()
+    if not paths:
+        log.warning("no memory source files found under %s — indexer idle", SOURCE_DIR)
         return False
     state_path = os.path.join(DATA_ROOT, "sync_state.json")
     if not os.path.exists(state_path):
@@ -198,7 +207,7 @@ def do_reindex():
     sources = sorted(set(c["metadata"]["source"] for c in chunks))
     log.info("Indexing %d chunks from %s", len(chunks), ", ".join(sources))
 
-    col_name = f"memory_{AGENT_SLUG or 'default'}"
+    col_name = f"memory_{SLUG_SAFE}"
     try:
         chroma_client.delete_collection(col_name)
     except Exception:
@@ -269,7 +278,7 @@ def hybrid_search(query, n=5):
                    sorted(range(len(bm25_scores)),
                           key=lambda x: bm25_scores[x], reverse=True)]
 
-    col_name = f"memory_{AGENT_SLUG or 'default'}"
+    col_name = f"memory_{SLUG_SAFE}"
     try:
         col = chroma_client.get_collection(col_name)
     except Exception:

@@ -75,6 +75,11 @@ resource "aws_iam_role_policy" "task" {
       },
       {
         Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/clawless/clients/${var.agent_slug}/verbose"
+      },
+      {
+        Effect   = "Allow"
         Action   = ["states:StartExecution"]
         Resource = var.lifecycle_sfn_arn
       },
@@ -177,6 +182,14 @@ resource "aws_ecs_service" "gateway" {
   task_definition = aws_ecs_task_definition.gateway.arn
   launch_type     = "FARGATE"
   desired_count   = var.active ? 1 : 0
+
+  # One task per agent, single writer for the S3 workspace and the Telegram
+  # long-poll. Default ECS rollout (min 100%, max 200%) runs old+new
+  # concurrently until the new task is healthy; we'd rather stop the old
+  # task first and accept a brief downtime. Sleep/wake is the real rollout
+  # mechanism here — image refreshes happen on wake, not during active use.
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   network_configuration {
     subnets          = var.subnet_ids

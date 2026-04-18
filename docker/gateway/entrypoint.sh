@@ -22,7 +22,11 @@
 #
 # Optional:
 #   OPENCLAW_CMD             — override command to start the gateway
-#                              (default: openclaw gateway)
+#                              (default: openclaw gateway run)
+#   OPENCLAW_VERBOSE         — if "1"/"true"/"yes", append --verbose to
+#                              OPENCLAW_CMD. Normally sourced from the SSM
+#                              parameter /clawless/clients/{slug}/verbose
+#                              at boot; a task-def env override wins.
 #   WAKE_MESSAGES_TABLE      — DynamoDB table polled at boot for a queued
 #                              wake message; unset disables wake-greet
 #   MEMORY_REINDEX_INTERVAL  — seconds between reindex checks (default 300)
@@ -34,7 +38,7 @@ set -euo pipefail
 : "${AGENT_SLUG:?AGENT_SLUG is required}"
 : "${BACKUP_BUCKET:?BACKUP_BUCKET is required}"
 : "${WORKSPACE_DIR:=/home/openclaw}"
-: "${OPENCLAW_CMD:=openclaw gateway}"
+: "${OPENCLAW_CMD:=openclaw gateway run}"
 : "${OPENCLAW_CONFIG_PATH:=/var/lib/openclaw/openclaw.json}"
 : "${OPENCLAW_BASELINE_PATH:=/opt/openclaw/openclaw.baseline.json}"
 : "${MEMORY_REINDEX_INTERVAL:=300}"
@@ -71,6 +75,26 @@ sync_up() {
     --exclude '.openclaw/openclaw.json.bak*' \
     --exclude '.openclaw/agents/*/sessions/*.lock' \
     --exclude '.aws/*' || log "sync-up failed (non-fatal)"
+}
+
+load_verbose_flag() {
+  # Toggle verbose gateway logging via SSM without a task-def revision.
+  # Task role has ssm:GetParameter scoped to /clawless/clients/{slug}/verbose.
+  # A task-def env override wins — if OPENCLAW_VERBOSE is already set, skip
+  # the SSM read entirely.
+  if [ -n "${OPENCLAW_VERBOSE:-}" ]; then
+    return 0
+  fi
+  local val
+  val=$(aws ssm get-parameter \
+      --name "/clawless/clients/${AGENT_SLUG}/verbose" \
+      --query 'Parameter.Value' --output text 2>/dev/null || true)
+  case "$val" in
+    true|1|yes)
+      export OPENCLAW_VERBOSE=1
+      log "verbose logging enabled via SSM /clawless/clients/${AGENT_SLUG}/verbose"
+      ;;
+  esac
 }
 
 install_aws_creds() {
@@ -326,8 +350,13 @@ trap shutdown TERM INT
 
 sync_down
 install_aws_creds
+load_verbose_flag
 install_config
 configure-openclaw
+
+case "${OPENCLAW_VERBOSE:-}" in
+  1|true|yes) OPENCLAW_CMD="${OPENCLAW_CMD} --verbose" ;;
+esac
 
 # Start the memory server first so it has time to warm and index in parallel
 # with the gateway's startup; by the time the first turn fires, /retrieve

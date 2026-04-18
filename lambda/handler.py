@@ -101,10 +101,7 @@ def lambda_handler(event, context):
     # Container SIGTERM handler runs sync-up on stop; sync-down on next boot.
     for slug in list(fast_slugs):
         if _fargate_service_exists(slug):
-            # Re-resolve :latest if ECR image was pushed since last deployment
-            _fargate_ensure_latest_image(slug)
-            print(f"[fargate:{slug}] resume via ecs:UpdateService desired=1")
-            _fargate_set_desired(slug, 1)
+            _fargate_wake(slug)
             fast_slugs.discard(slug)
 
     for slug in list(slow_slugs):
@@ -286,60 +283,64 @@ def _fargate_set_desired(slug, count):
     print(f"[fargate:{slug}] desired_count={count}")
 
 
-def _fargate_ensure_latest_image(slug):
-    """Force a new deployment only if the service's image digest is stale.
+def _fargate_wake(slug):
+    """Wake the service with a single atomic update_service call.
 
-    Compares the image digest in the service's current task definition against
-    the digest ECR has for :latest. Skips the force-new-deployment (and the
-    resulting image pull delay) when they already match.
+    Scales desired_count 0→1 and, only when :latest has been pushed to ECR
+    since the current deployment was created, folds in forceNewDeployment
+    so the tag re-resolves to the new digest. ECS resolves :latest → digest
+    at deployment time and caches it; without forceNewDeployment a bare
+    scale-up would reuse the stale cached digest.
+
+    Both fields in one API call → one deployment → one task start, on the
+    right image. A separate-call sequence produces two deployments and
+    overlapping tasks.
+
+    When the image is unchanged, forceNewDeployment is omitted — a Fargate
+    task launch already pulls per-task, but skipping it lets ECS short-circuit
+    to the cached digest and keeps wake speed predictable.
     """
     name = _fargate_service_name(slug)
+    kwargs = {"cluster": ECS_CLUSTER, "service": name, "desiredCount": 1}
+    if _image_stale(slug):
+        kwargs["forceNewDeployment"] = True
+        print(f"[fargate:{slug}] wake: desired=1 + force-new-deployment (:latest updated)")
+    else:
+        print(f"[fargate:{slug}] wake: desired=1 (image current)")
+    ecs.update_service(**kwargs)
+
+
+def _image_stale(slug):
+    """Return True if :latest has been pushed to ECR after the service's
+    current deployment was created. On any check failure, default to True
+    so the wake still refreshes rather than serving a potentially stale
+    image silently."""
+    name = _fargate_service_name(slug)
     try:
-        # Get the image URI from the service's current task definition
         svc_resp = ecs.describe_services(cluster=ECS_CLUSTER, services=[name])
         services = [s for s in svc_resp.get("services", []) if s.get("status") != "INACTIVE"]
         if not services:
-            return
+            return True
+        deployments = services[0].get("deployments", [])
+        if not deployments:
+            return True
+        deploy_created = deployments[0].get("createdAt")
+
         task_def_arn = services[0]["taskDefinition"]
         td_resp = ecs.describe_task_definition(taskDefinition=task_def_arn)
         image_uri = td_resp["taskDefinition"]["containerDefinitions"][0]["image"]
-
-        # image_uri is like "123456.dkr.ecr.us-east-1.amazonaws.com/clawless-gateway:latest"
+        # e.g. "123456.dkr.ecr.us-east-1.amazonaws.com/clawless-gateway:latest"
         repo_name = image_uri.split("/", 1)[1].split(":")[0]
 
-        # Get the digest ECS resolved for this deployment
-        deployments = services[0].get("deployments", [])
-        if not deployments:
-            return
-
-        # Get the current :latest digest from ECR
-        ecr = boto3.client("ecr")
-        ecr_resp = ecr.describe_images(
+        ecr_resp = boto3.client("ecr").describe_images(
             repositoryName=repo_name,
             imageIds=[{"imageTag": "latest"}],
         )
-        ecr_digest = ecr_resp["imageDetails"][0]["imageDigest"]
-
-        # Get the digest the task definition was last deployed with by checking
-        # the most recent task's image digest, or compare via the task def image
-        # If the deployment has a rolloutState, the image was resolved at deploy time.
-        # We need to check what digest the running/pending tasks actually use.
-        # Simplest: compare task def revision age vs ECR image push time.
         ecr_pushed = ecr_resp["imageDetails"][0]["imagePushedAt"]
-        deploy_created = deployments[0].get("createdAt")
-
-        if deploy_created and ecr_pushed > deploy_created:
-            print(f"[fargate:{slug}] image updated since last deployment — forcing new deployment")
-            ecs.update_service(cluster=ECS_CLUSTER, service=name, forceNewDeployment=True)
-        else:
-            print(f"[fargate:{slug}] image digest current — skipping force-new-deployment")
+        return bool(deploy_created and ecr_pushed > deploy_created)
     except (ClientError, KeyError, IndexError) as e:
-        # On any failure, force the deployment to be safe
-        print(f"[fargate:{slug}] digest check failed ({e}) — forcing new deployment")
-        try:
-            ecs.update_service(cluster=ECS_CLUSTER, service=name, forceNewDeployment=True)
-        except ClientError:
-            print(f"[fargate:{slug}] WARNING: force-new-deployment also failed")
+        print(f"[fargate:{slug}] image-stale check failed ({e}) — assuming stale")
+        return True
 
 
 # ── SSM agent config ─────────────────────────────────────────────────────────
