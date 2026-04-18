@@ -49,5 +49,10 @@ resource "null_resource" "gateway_image" {
     command = "${path.module}/../scripts/build-gateway-image.sh --region ${var.aws_region} --ecr-repo ${aws_ecr_repository.gateway.repository_url}"
   }
 
-  depends_on = [aws_ecr_repository.gateway]
+  # build-gateway-image.sh invokes the SOCI Lambda synchronously, so the
+  # Lambda must exist and be ready before this resource runs.
+  depends_on = [
+    aws_ecr_repository.gateway,
+    aws_lambda_function.soci_builder,
+  ]
 }
