@@ -112,7 +112,7 @@ GRAB → CLASSIFY → FAST/SLOW DISPATCH → RELEASE
 
 3. FAST PATH (sleep/wake):
    - Existing service → ecs:UpdateService desired=0 or 1. Done in seconds.
-   - On wake, re-resolves the ECR `:latest` tag — forces a new deployment only if the image was pushed since the last deployment (avoids unnecessary image pulls).
+   - Wake is a single UpdateService call: `desiredCount=1` is combined with `forceNewDeployment=True` only when :latest has been pushed to ECR since the last deployment. One API call → one deployment → one task launch, on the fresh image. ECS otherwise caches the resolved digest, so omitting forceNewDeployment on an unchanged image keeps wake speed predictable.
    - Container SIGTERM handler syncs workspace to S3 on sleep.
    - Container sync_down restores workspace on wake.
 

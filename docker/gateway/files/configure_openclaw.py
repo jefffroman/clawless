@@ -144,10 +144,21 @@ def patch_config():
         config["channels"][CHANNEL] = {**existing, **CHANNEL_CONFIG}
         print(f"channels.{CHANNEL} patched")
 
-    # Remove plugins block entirely — even an empty plugins.allow list
-    # silently prevents channel initialization (openclaw/openclaw#55304).
-    # Re-add when context engine plugin is unblocked.
-    config.pop("plugins", None)
+    # Context-engine plugin: baked into the image at /opt/openclaw/extensions.
+    # Listed via plugins.load.paths so OpenClaw auto-loads it on boot. No
+    # plugins.allow entry needed as of 2026.3.28 — bundled/explicit path
+    # plugins auto-load. plugins.slots.contextEngine intentionally absent
+    # (removed upstream; caused hard "not registered" errors).
+    plugins = config.setdefault("plugins", {})
+    load    = plugins.setdefault("load", {})
+    paths   = load.setdefault("paths", [])
+    ext_dir = "/opt/openclaw/extensions/clawless-memory"
+    if ext_dir not in paths:
+        paths.append(ext_dir)
+    # Strip any stale keys from earlier configure_openclaw.py runs.
+    plugins.pop("allow", None)
+    plugins.pop("slots", None)
+    print(f"plugins.load.paths patched: {ext_dir}")
 
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
