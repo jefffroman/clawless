@@ -1,10 +1,12 @@
 """Build a SOCI index for a pushed ECR image and promote :latest.
 
 Invoked synchronously by scripts/build-gateway-image.sh after pushing a
-candidate tag. Pulls the image into a Lambda-local containerd (native
-snapshotter, /tmp-backed), runs `soci create` + `soci push` to produce and
-upload the index as an OCI artifact referencing the image's manifest digest,
-then re-tags the digest as :latest and deletes the candidate tag.
+candidate tag. Runs a Lambda-local containerd (state under /tmp — rootfs
+is read-only except /tmp), fetches image blobs into the content store with
+`ctr content fetch` (no snapshotter needed — SOCI reads the raw layers),
+runs `soci create` + `soci push` to produce and upload the index as an
+OCI artifact referencing the image's manifest digest, then re-tags the
+digest as :latest and deletes the candidate tag.
 
 Event payload:
     repository      — ECR repo name (e.g. "clawless-gateway")
@@ -33,6 +35,7 @@ CONTAINERD_SOCKET = "/tmp/containerd/containerd.sock"
 CONTAINERD_ROOT   = "/tmp/containerd/root"
 CONTAINERD_STATE  = "/tmp/containerd/state"
 NAMESPACE         = "soci"
+SOCI_ROOT         = "/tmp/soci-root"
 
 _containerd_proc = None
 
@@ -47,23 +50,67 @@ def start_containerd():
     for d in (CONTAINERD_ROOT, CONTAINERD_STATE, "/tmp/containerd"):
         os.makedirs(d, exist_ok=True)
 
-    log.info("starting containerd")
+    # Write a minimal config file (not passable via CLI flags): grpc.uid/gid
+    # must match our runtime uid, or containerd's chown-socket step fails
+    # with EPERM under Lambda's restricted capability set. ttrpc block sets
+    # the same for the shim socket.
+    uid, gid = os.getuid(), os.getgid()
+    config_path = "/tmp/containerd/config.toml"
+    with open(config_path, "w") as f:
+        f.write(
+            f'version = 2\n'
+            f'root  = "{CONTAINERD_ROOT}"\n'
+            f'state = "{CONTAINERD_STATE}"\n'
+            f'[grpc]\n'
+            f'  address = "{CONTAINERD_SOCKET}"\n'
+            f'  uid = {uid}\n'
+            f'  gid = {gid}\n'
+            f'[ttrpc]\n'
+            f'  address = "{CONTAINERD_SOCKET}.ttrpc"\n'
+            f'  uid = {uid}\n'
+            f'  gid = {gid}\n'
+        )
+
+    log.info("starting containerd (uid=%d gid=%d)", uid, gid)
+    # Capture output so startup failures are diagnosable via CloudWatch.
+    containerd_log = open("/tmp/containerd.log", "w")
     _containerd_proc = subprocess.Popen(
-        ["containerd", "-c", "/etc/containerd/config.toml"],
-        stdout=subprocess.DEVNULL,
+        ["containerd", "--config", config_path],
+        stdout=containerd_log,
         stderr=subprocess.STDOUT,
     )
+
+    def tail_log():
+        try:
+            with open("/tmp/containerd.log") as f:
+                return f.read()[-4000:]
+        except Exception:
+            return "(no log captured)"
+
     for _ in range(60):
         if os.path.exists(CONTAINERD_SOCKET):
             log.info("containerd ready")
             return
+        if _containerd_proc.poll() is not None:
+            log.error("containerd exited (code=%s) before socket appeared:\n%s",
+                      _containerd_proc.returncode, tail_log())
+            raise RuntimeError(f"containerd exited code {_containerd_proc.returncode}")
         time.sleep(0.5)
+
+    log.error("containerd timeout (socket never appeared):\n%s", tail_log())
     raise RuntimeError("containerd failed to start within 30s")
 
 
 def run(cmd, **kw):
-    log.info("exec: %s", " ".join(cmd))
-    return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
+    # Redact ECR auth token in logs — it's the last string after --user.
+    redacted = [("<redacted>" if i > 0 and cmd[i - 1] == "--user" else c) for i, c in enumerate(cmd)]
+    log.info("exec: %s", " ".join(redacted))
+    result = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    if result.returncode != 0:
+        log.error("exit=%s\nstdout:\n%s\nstderr:\n%s",
+                  result.returncode, result.stdout, result.stderr)
+        raise RuntimeError(f"{redacted[0]} failed (exit {result.returncode})")
+    return result
 
 
 def ecr_auth(region):
@@ -88,14 +135,17 @@ def lambda_handler(event, context):
     image_ref  = f"{registry}/{repo}@{digest}"
     auth       = ecr_auth(region)
 
+    os.makedirs(SOCI_ROOT, exist_ok=True)
     ctr_base  = ["ctr", "--address", CONTAINERD_SOCKET, "--namespace", NAMESPACE]
-    soci_base = ["soci", "--address", CONTAINERD_SOCKET, "--namespace", NAMESPACE]
+    soci_base = ["soci", "--address", CONTAINERD_SOCKET, "--namespace", NAMESPACE,
+                 "--root", SOCI_ROOT]
 
-    # Pull image via native snapshotter (no overlay/loop needed; regular files).
+    # Fetch blobs only (no unpack). SOCI indexes the content-addressed layers
+    # in the store; it doesn't need a snapshot mounted. This sidesteps the
+    # snapshotter entirely.
     run(ctr_base + [
-        "images", "pull",
+        "content", "fetch",
         "--platform", "linux/arm64",
-        "--snapshotter", "native",
         "--user", auth,
         image_ref,
     ])

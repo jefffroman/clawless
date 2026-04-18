@@ -7,6 +7,12 @@ ARG SOCI_VERSION=0.10.0
 # base image but we pin anyway to avoid surprises.
 RUN dnf install -y containerd runc tar gzip findutils && dnf clean all
 
+# Lambda's rootfs is read-only except /tmp. containerd 2.x has a hardcoded
+# /run/containerd path that --state doesn't fully override (some plugins
+# still write there). Pre-create it as a symlink into /tmp so containerd's
+# idempotent MkdirAll succeeds at runtime.
+RUN ln -s /tmp/containerd /run/containerd
+
 # soci-snapshotter CLI. The release tarball layout varies across versions,
 # so extract + find rather than assuming a path.
 RUN curl -fsSL \
@@ -21,7 +27,6 @@ RUN curl -fsSL \
 
 RUN pip install --no-cache-dir boto3
 
-COPY lambda/soci-index-builder/containerd-config.toml /etc/containerd/config.toml
 COPY lambda/soci-index-builder/handler.py             ${LAMBDA_TASK_ROOT}/
 
 CMD ["handler.lambda_handler"]

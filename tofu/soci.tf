@@ -37,7 +37,6 @@ resource "null_resource" "soci_builder_image" {
   triggers = {
     dockerfile = filemd5("${path.module}/../lambda/soci-index-builder/Dockerfile")
     handler    = filemd5("${path.module}/../lambda/soci-index-builder/handler.py")
-    config     = filemd5("${path.module}/../lambda/soci-index-builder/containerd-config.toml")
   }
 
   provisioner "local-exec" {
