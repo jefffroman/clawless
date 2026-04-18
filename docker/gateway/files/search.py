@@ -1,4 +1,5 @@
 import os, json, chromadb
+from chromadb.utils import embedding_functions
 from rank_bm25 import BM25Okapi
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -29,12 +30,10 @@ def hybrid_search(query, n=N_RESULTS):
     bm25_ranked = [corpus[i]["id"] for i in
                    sorted(range(len(bm25_scores)), key=lambda x: bm25_scores[x], reverse=True)]
 
-    from sentence_transformers import SentenceTransformer  # lazy import
-    model         = SentenceTransformer("all-MiniLM-L6-v2")
+    embedder      = embedding_functions.DefaultEmbeddingFunction()
     client        = chromadb.PersistentClient(path=VECTOR_DB)
-    col           = client.get_collection("memory_chunks")
-    vec           = model.encode([query]).tolist()
-    results       = col.query(query_embeddings=vec, n_results=min(n * 2, col.count()),
+    col           = client.get_collection("memory_chunks", embedding_function=embedder)
+    results       = col.query(query_texts=[query], n_results=min(n * 2, col.count()),
                               include=["documents", "metadatas", "distances"])
     vector_ranked = [f"mem_{i}" for i in
                      sorted(range(len(results["ids"][0])),

@@ -1,7 +1,10 @@
 """Single-agent memory retrieval server for the Fargate gateway.
 
-Long-running aiohttp process that keeps SentenceTransformer and ChromaDB warm
-so the context-engine plugin gets sub-second responses on every agent turn.
+Long-running aiohttp process that keeps ChromaDB's embedding function and the
+collection warm so the context-engine plugin gets sub-second responses on
+every agent turn. Embeddings come from ChromaDB's bundled ONNX runtime
+(all-MiniLM-L6-v2) — no torch/sentence-transformers, shaves ~300 MB off the
+image.
 
 One Fargate task = one agent, so everything is keyed off AGENT_SLUG from the
 task-def env. Data lives at DATA_ROOT (ephemeral per-container — rebuilt on
@@ -28,8 +31,8 @@ import chromadb
 import networkx as nx
 import yaml
 from aiohttp import web
+from chromadb.utils import embedding_functions
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
 
 AGENT_SLUG    = os.environ.get("AGENT_SLUG", "").strip()
 # ChromaDB collection names must match [a-zA-Z0-9._-] — convert "client/agent"
@@ -48,14 +51,14 @@ RRF_K         = 60
 
 log = logging.getLogger("memory-server")
 
-model = None
+embedder = None
 chroma_client = None
 
 
 def warmup():
-    global model, chroma_client
-    log.info("Loading SentenceTransformer %s ...", MODEL_NAME)
-    model = SentenceTransformer(MODEL_NAME)
+    global embedder, chroma_client
+    log.info("Loading embedding function (%s via ONNX)...", MODEL_NAME)
+    embedder = embedding_functions.DefaultEmbeddingFunction()
 
     os.makedirs(DATA_ROOT, exist_ok=True)
     db_path = os.path.join(DATA_ROOT, "chroma_db")
@@ -212,13 +215,12 @@ def do_reindex():
         chroma_client.delete_collection(col_name)
     except Exception:
         pass
-    col = chroma_client.create_collection(col_name)
+    col = chroma_client.create_collection(col_name, embedding_function=embedder)
 
     ids        = [f"{c['metadata']['source']}:{i}" for i, c in enumerate(chunks)]
     documents  = [c["content"] for c in chunks]
     metadatas  = [c["metadata"] for c in chunks]
-    embeddings = model.encode(documents).tolist()
-    col.upsert(ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas)
+    col.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
     corpus = [
         {"id": ids[i], "text": documents[i], "section": metadatas[i]["section"]}
@@ -280,14 +282,13 @@ def hybrid_search(query, n=5):
 
     col_name = f"memory_{SLUG_SAFE}"
     try:
-        col = chroma_client.get_collection(col_name)
+        col = chroma_client.get_collection(col_name, embedding_function=embedder)
     except Exception:
         return []
 
-    vec = model.encode([query]).tolist()
     total = max(col.count(), 1)
     results = col.query(
-        query_embeddings=vec,
+        query_texts=[query],
         n_results=min(n * 2, total),
         include=["documents", "metadatas", "distances"],
     )

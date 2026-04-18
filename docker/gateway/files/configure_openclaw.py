@@ -160,6 +160,27 @@ def patch_config():
     plugins.pop("slots", None)
     print(f"plugins.load.paths patched: {ext_dir}")
 
+    # Disable built-in plugins we don't use on Fargate. Each one adds boot time
+    # (permission probes, device discovery, voice init, browser CDP bootstrap)
+    # for features that are impossible or meaningless in this container.
+    #   - phone-control / talk-voice: no phone, no speaker
+    #   - acpx: we don't orchestrate agent-to-agent over ACP; channels are
+    #     Telegram/Discord/Slack
+    #   - browser: searxng skill uses stdlib HTTP via uv, not a Chrome session
+    #   - device-pair: wake-greet uses `openclaw agent --channel`, not pairing;
+    #     allowlists are managed via SSM by add-agent.sh
+    entries = plugins.setdefault("entries", {})
+    for disabled in ("phone-control", "talk-voice", "acpx", "browser", "device-pair"):
+        entries[disabled] = {"enabled": False}
+    print("plugins.entries: phone-control, talk-voice, acpx, browser, device-pair disabled")
+
+    # mDNS/Bonjour discovery scans the local network on boot. Fargate tasks
+    # are single-container with no LAN peers — the scan just burns ~1-2s and
+    # logs noisy warnings about missing avahi.
+    discovery = config.setdefault("discovery", {})
+    discovery.setdefault("mdns", {})["mode"] = "off"
+    print("discovery.mdns.mode patched: off")
+
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     print("openclaw.json patched — restart OpenClaw to apply")
