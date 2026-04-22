@@ -109,8 +109,11 @@ META=$(aws lambda invoke \
   --cli-read-timeout 900 \
   "$RESPONSE")
 
+# `grep` exits 1 on no match, which under `pipefail` would abort the script.
+# StatusCode is always present on success; FunctionError is only present on
+# failure, so its grep is allowed to miss.
 STATUS=$(echo "$META" | grep -o '"StatusCode":[[:space:]]*[0-9]*' | awk -F: '{print $2}' | tr -d ' ')
-ERROR=$(echo "$META" | grep -o '"FunctionError":[[:space:]]*"[^"]*"' | sed 's/.*"FunctionError":[[:space:]]*"\([^"]*\)"/\1/')
+ERROR=$(echo "$META" | grep -o '"FunctionError":[[:space:]]*"[^"]*"' | sed 's/.*"FunctionError":[[:space:]]*"\([^"]*\)"/\1/' || true)
 
 if [[ "$STATUS" != "200" || -n "$ERROR" ]]; then
   echo "SOCI build FAILED. :latest unchanged."
