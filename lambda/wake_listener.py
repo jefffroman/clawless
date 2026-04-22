@@ -63,12 +63,31 @@ def lambda_handler(event, context):
     text = message.get("text", "")
     sender = message.get("from", {})
     sender_name = sender.get("first_name", "User")
+    sender_id = sender.get("id")
 
     if not text:
         print("No message text — ignoring (might be a media message or service update)")
         return {"statusCode": 200, "body": "ok"}
 
-    print(f"Message received ({len(text)} chars)")
+    # ── Enforce sender allowlist (cost protection) ───────────────────────
+    # Read agent config once; reused below for the Telegram reply token.
+    bot_token, allow_from, config_error = _load_channel_config(agent_path)
+    if config_error:
+        # Required invariant broken — fail closed and page.
+        msg = f"Invariant violation for {agent_path}: {config_error}"
+        print(msg)
+        _alert(msg)
+        return {"statusCode": 200, "body": "ok"}
+
+    if str(sender_id) not in allow_from:
+        preview = text[:40].replace("\n", " ")
+        print(
+            f"rejected: sender_id={sender_id} sender_name={sender_name!r} "
+            f"text_len={len(text)} preview={preview!r}"
+        )
+        return {"statusCode": 200, "body": "ok"}
+
+    print(f"accepted: text_len={len(text)}")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     now_iso = now.isoformat()
@@ -109,7 +128,7 @@ def lambda_handler(event, context):
             )
         except ClientError as e:
             print(f"DynamoDB append failed: {e}")
-        _send_telegram_reply(agent_path, sender.get("id"), "_(Got it — still waking up!)_")
+        _send_telegram_reply(bot_token, sender_id, "_(Got it — still waking up!)_")
         return {"statusCode": 200, "body": "ok"}
 
     # ── First wake message — write to DynamoDB ───────────────────────────
@@ -151,29 +170,51 @@ def lambda_handler(event, context):
         _alert(f"Wake listener failed to invoke SFN for {agent_path}: {e}")
 
     # ── Reply to user on Telegram ────────────────────────────────────────
-    _send_telegram_reply(agent_path, sender.get("id"), "_(Waking up — give me a few minutes)_")
+    _send_telegram_reply(bot_token, sender_id, "_(Waking up — give me a few minutes)_")
 
     return {"statusCode": 200, "body": "ok"}
 
 
-def _send_telegram_reply(agent_path, chat_id, text):
-    """Send a reply via Telegram Bot API using the bot token from SSM."""
-    if not chat_id:
-        return
+def _load_channel_config(agent_path):
+    """Read agent SSM config and validate channel_config invariants.
+
+    Returns (bot_token, allow_from_set, error). On error, the first two are
+    None/empty and `error` is a human-readable reason for SNS alerting.
+    """
+    param_name = f"/clawless/clients/{agent_path}"
+    try:
+        param = ssm.get_parameter(Name=param_name, WithDecryption=True)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "Unknown")
+        return None, set(), f"SSM GetParameter {code} for {param_name}"
 
     try:
-        param = ssm.get_parameter(
-            Name=f"/clawless/clients/{agent_path}",
-            WithDecryption=True,
-        )
         config = json.loads(param["Parameter"]["Value"])
-        bot_token = (config.get("channel_config") or {}).get("botToken")
-    except (ClientError, json.JSONDecodeError, KeyError) as e:
-        print(f"Could not read bot token for {agent_path}: {e}")
-        return
+    except (json.JSONDecodeError, KeyError) as e:
+        return None, set(), f"SSM value parse failed for {param_name}: {e}"
 
+    channel_config = config.get("channel_config")
+    if not isinstance(channel_config, dict):
+        return None, set(), "channel_config missing or not an object"
+
+    dm_policy = channel_config.get("dmPolicy")
+    if dm_policy != "allowlist":
+        return None, set(), f"dmPolicy must be 'allowlist', got {dm_policy!r}"
+
+    allow_from = channel_config.get("allowFrom")
+    if not isinstance(allow_from, list) or not allow_from:
+        return None, set(), "allowFrom missing, not a list, or empty"
+
+    bot_token = channel_config.get("botToken")
     if not bot_token:
-        print(f"No bot token for {agent_path} — skipping reply")
+        return None, set(), "botToken missing"
+
+    return bot_token, {str(x) for x in allow_from}, None
+
+
+def _send_telegram_reply(bot_token, chat_id, text):
+    """Send a reply via Telegram Bot API."""
+    if not chat_id or not bot_token:
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
