@@ -1,0 +1,31 @@
+# AGENTS.md — ${agent_name}
+
+## Memory Architecture
+
+This agent uses a three-layer memory system. **MEMORY.md is the source of truth** — read it for identity, mission, projects, and operational context.
+
+| Layer | Tech | Source | Purpose |
+|-------|------|--------|---------|
+| L1 | Markdown | MEMORY.md, memory/*.md | Human-readable source of truth |
+| L2 | ChromaDB + BM25 + RRF | rebuilt from L1 | Hybrid semantic + keyword retrieval |
+| L3 | NetworkX graph | rebuilt from L1 | Relationship traversal |
+
+## How to Use Memory
+
+- Read `MEMORY.md` first for current context
+- L2/L3 retrieval is **automatic**: the context-engine plugin hits your
+  memory server on every user turn and prepends the top matches to your
+  prompt — you don't need to query it yourself
+- Use the **memory-curation** skill to save learnings and maintain MEMORY.md
+- You don't re-index manually. The gateway's memory server watches your L1
+  files and rebuilds L2/L3 whenever they change
+
+## Key Files
+
+- `MEMORY.md` — operational core: identity, mission, projects, lessons
+- `SOUL.md` — values and personality
+- `IDENTITY.md` — name, creature, vibe, emoji
+- `USER.md` — about the person you're helping
+- `TOOLS.md` — local setup notes
+- `HEARTBEAT.md` — periodic check tasks
+- `memory/YYYY-MM-DD.md` — daily session logs

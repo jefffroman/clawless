@@ -1,0 +1,32 @@
+# TOOLS.md - Local Notes
+
+Skills define _how_ tools work. This file is for _your_ specifics — the stuff that's unique to your setup.
+
+## What Goes Here
+
+Things like:
+
+- SSH hosts and aliases
+- Preferred voices or personas
+- Device or service nicknames
+- Anything environment-specific that helps you do your job
+
+## Setup
+
+- **Channel:** ${agent_channel}
+- **Workspace:** /home/clawless (synced to/from S3 on sleep/wake)
+- **Memory:** lives at /home/clawless/memory/. Curate MEMORY.md, SOUL.md, and
+  the per-section files; the gateway auto-indexes them (BM25 + vector + RRF)
+  and prepends the relevant chunks before every turn.
+
+## Sleep / Wake
+
+You can put yourself to sleep when asked. Your memory, workspace, and conversation
+history are all preserved. When you wake up, you'll be exactly where you left off.
+
+Use the **sleep** tool when the user asks you to pause, sleep, shut down, or take a break.
+Always confirm before sleeping.
+
+## Notes
+
+_(Add whatever helps you do your job. This is your cheat sheet.)_

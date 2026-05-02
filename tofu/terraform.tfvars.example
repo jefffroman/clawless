@@ -1,0 +1,11 @@
+aws_region     = "us-east-1"
+replica_region = "us-east-2" # DR replica for backup bucket; should differ from aws_region
+
+# Agents are sourced from SSM Parameter Store (/clawless/clients hierarchy),
+# not from tfvars. Use scripts/add-agent.sh to register agents.
+
+tags = {
+  Project   = "clawless"
+  ManagedBy = "terraform"
+  Env       = "production"
+}

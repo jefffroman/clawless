@@ -1,0 +1,22 @@
+.DS_Store
+.claude/
+/memory/
+*.env
+*.env.*
+!*.env.j2
+
+# Terraform / OpenTofu
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfvars
+**/backend.hcl
+
+# Project notes — excluded from public repo; live in the private platform repo
+CLAUDE.md
+CONTEXT.md
+
+# Files being edited
+**/*.swp
+__pycache__/
+tofu/.build/

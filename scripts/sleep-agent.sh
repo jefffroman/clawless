@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# sleep-agent.sh — Put an agent to sleep by setting its /active parameter to "false".
+# The lifecycle Lambda scales the Fargate service to desired_count=0; the running
+# task receives SIGTERM and syncs its workspace up to S3 before exiting.
+#
+# Usage: ./scripts/sleep-agent.sh <client-slug> <agent-slug> [--region <region>]
+# Example: ./scripts/sleep-agent.sh zalman wingmate
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOFU_DIR="$REPO_ROOT/tofu"
+
+hr() { printf '%*s\n' 72 '' | tr ' ' '-'; }
+log() { echo "[sleep] $*"; }
+
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <client-slug> <agent-slug> [--region <region>]" >&2
+  exit 1
+fi
+
+CLIENT_SLUG="$1"; AGENT_SLUG="$2"; shift 2
+REGION=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --region) REGION="$2"; shift 2 ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$REGION" ]]; then
+  REGION=$(grep '^aws_region' "$TOFU_DIR/terraform.tfvars" 2>/dev/null \
+    | awk -F'"' '{print $2}' || true)
+  REGION="${REGION:-us-east-1}"
+fi
+
+ACTIVE_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}/active"
+AGENT_PARAM="/clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
+
+hr
+log "Putting agent to sleep: ${CLIENT_SLUG}/${AGENT_SLUG}"
+log "  Region: $REGION"
+hr
+
+CURRENT=$(aws ssm get-parameter \
+  --name "$ACTIVE_PARAM" \
+  --query 'Parameter.Value' \
+  --output text --region "$REGION" 2>/dev/null || true)
+
+if [[ -z "$CURRENT" ]]; then
+  log "ERROR: agent '${CLIENT_SLUG}/${AGENT_SLUG}' not found in SSM" >&2; exit 1
+fi
+if [[ "$CURRENT" == "false" ]]; then
+  log "ERROR: agent ${CLIENT_SLUG}/${AGENT_SLUG} is already asleep" >&2; exit 1
+fi
+
+log "Updating ${ACTIVE_PARAM} → false..."
+aws ssm put-parameter \
+  --name "$ACTIVE_PARAM" \
+  --type String \
+  --overwrite \
+  --value "false" \
+  --region "$REGION" >/dev/null
+
+log "Invoking Step Functions (lifecycle)..."
+SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \
+  --query 'stateMachines[?name==`clawless-lifecycle`].stateMachineArn | [0]' --output text)
+SFN_INPUT=$(jq -cn \
+  --arg name "$AGENT_PARAM" \
+  --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{event_id: (now | tostring), time: $time, name: $name, operation: "Update"}')
+aws stepfunctions start-execution \
+  --state-machine-arn "$SFN_ARN" \
+  --input "$SFN_INPUT" \
+  --region "$REGION" >/dev/null
+log "Step Functions invoked."
+
+hr
+log "Sleep triggered. The Fargate task will sync workspace and stop."
+log "Wake with: ./scripts/wake-agent.sh ${CLIENT_SLUG} ${AGENT_SLUG}"
+hr
