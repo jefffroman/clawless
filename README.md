@@ -4,7 +4,7 @@
 
 **An on-demand, resumable, serverless agent platform for AWS.**
 
-> **Alpha** — Clawless is under active development. The core lifecycle (add, sleep, wake, remove) is working and tested, but the project is early. Expect rough edges, breaking changes, and missing features. Feedback and contributions are welcome.
+> Clawless is under early, active development. Expect rough edges, breaking changes, and missing features. Feedback and contributions are welcome.
 
 <br clear="left">
 
