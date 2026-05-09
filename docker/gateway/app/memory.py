@@ -7,10 +7,11 @@ under ``${WORKSPACE_DIR}/memory/``; ChromaDB persists at
 Embeddings come from ChromaDB's bundled ONNX runtime (all-MiniLM-L6-v2) — no
 torch / sentence-transformers, shaves ~300 MB off the image.
 
-The OpenClaw-era separation (memory as a separate aiohttp process on
-loopback) was forced by the Node↔Python boundary. With a Python gateway it
-collapses into a function call: this module owns the indexes; the gateway
-calls ``retrieve_markdown`` on every turn before assembling the prompt.
+Reindex is per-file SHA-mapped: each source file's hash is stored individually
+in ``sync_state.json`` so a single daily-note append re-embeds one source's
+chunks rather than the whole collection. Chunk IDs are enumerated per-source
+(``{source}:{i}``) so surviving chunk IDs stay stable across incremental
+upserts and match the BM25 corpus written alongside.
 """
 
 from __future__ import annotations
@@ -82,11 +83,15 @@ class MemoryIndex:
 
     def _daily_notes(self) -> list[str]:
         return [
-            p for p in sorted(globmod.glob(os.path.join(self.source_dir, "memory", "*.md")))
+            p for p in sorted(globmod.glob(os.path.join(self.source_dir, "*.md")))
             if DAILY_NOTE_PATTERN.match(os.path.basename(p))
         ]
 
     def _source_paths(self) -> list[str]:
+        # Both top-level docs (MEMORY.md, SOUL.md, etc.) and daily notes
+        # (YYYY-MM-DD.md) live flat under source_dir (WORKSPACE_DIR/memory).
+        # The basename pattern distinguishes them: ROOT_SOURCES are named
+        # files; daily notes match DAILY_NOTE_PATTERN.
         paths: list[str] = []
         for name in ROOT_SOURCES:
             p = os.path.join(self.source_dir, name)
@@ -95,15 +100,28 @@ class MemoryIndex:
         paths.extend(self._daily_notes())
         return paths
 
-    def _compute_sources_hash(self) -> str:
-        h = hashlib.md5()
+    def _source_key(self, path: str) -> str:
+        """Stable key for a source path. Top-level docs use just the basename
+        ('MEMORY.md'), daily notes are namespaced under 'memory/' to match
+        the chunk metadata convention. The keys must match the strings
+        written into chunk metadata (see _collect_sources) so
+        col.delete(where={"source": k}) lines up."""
+        bn = os.path.basename(path)
+        if bn in ROOT_SOURCES:
+            return bn
+        return f"memory/{bn}"
+
+    def _compute_source_hashes(self) -> dict[str, str]:
+        """Per-file SHA1 over current source bytes. Per-file (not global)
+        so a single daily-note append doesn't invalidate every other file."""
+        out: dict[str, str] = {}
         for path in self._source_paths():
             try:
                 with open(path, "rb") as f:
-                    h.update(f.read())
+                    out[self._source_key(path)] = hashlib.sha1(f.read()).hexdigest()
             except FileNotFoundError:
                 pass
-        return h.hexdigest()
+        return out
 
     @staticmethod
     def _parse_markdown(path: str) -> list[dict[str, Any]]:
@@ -159,20 +177,55 @@ class MemoryIndex:
             json.dump(obj, f, indent=2)
         os.replace(tmp, path)
 
-    def needs_reindex(self) -> bool:
-        if not self._source_paths():
-            return False
+    def _load_prev_hashes(self) -> dict[str, str] | None:
+        """Returns the per-file hash map from sync_state.json, or None if
+        the state file is missing, malformed, or in the legacy single-
+        ``sourcesHash`` format. Caller treats None as "everything changed"
+        and triggers a full rebuild that upgrades the file."""
         state_path = os.path.join(self.data_dir, "sync_state.json")
         if not os.path.exists(state_path):
-            return True
+            return None
         try:
             with open(state_path) as f:
                 state = json.load(f)
-            return self._compute_sources_hash() != state.get("sourcesHash", "")
         except Exception:
-            return True
+            return None
+        prev = state.get("sourceHashes")
+        if not isinstance(prev, dict):
+            return None
+        return prev
 
-    def do_reindex(self) -> dict[str, Any]:
+    def needs_reindex(self) -> tuple[list[str], list[str]]:
+        """Returns ``(changed, removed)`` source-key lists. Empty tuple
+        ``([], [])`` means in-sync. A ``None`` ``prev_hashes`` (missing/legacy
+        state) returns ``(all_current_sources, [])`` so the caller takes the
+        full-rebuild path and upgrades the state file."""
+        current = self._compute_source_hashes()
+        if not current:
+            return ([], [])
+        prev = self._load_prev_hashes()
+        if prev is None:
+            return (sorted(current.keys()), [])
+        changed = sorted(k for k, v in current.items() if prev.get(k) != v)
+        removed = sorted(k for k in prev.keys() if k not in current)
+        return (changed, removed)
+
+    @staticmethod
+    def _assign_chunk_ids(chunks: list[dict[str, Any]]) -> list[str]:
+        """Per-source enumeration: ``{source}:{i}`` where i is local to that
+        source. Stable across reindexes — adding a section to one file
+        doesn't shift any other file's ids — which makes the incremental
+        path's surviving-chunk ids match the freshly-built BM25 corpus ids."""
+        ids: list[str] = []
+        per_source_idx: dict[str, int] = {}
+        for c in chunks:
+            src = c["metadata"]["source"]
+            i = per_source_idx.get(src, 0)
+            ids.append(f"{src}:{i}")
+            per_source_idx[src] = i + 1
+        return ids
+
+    def do_reindex(self, changed: list[str], removed: list[str]) -> dict[str, Any]:
         assert self.chroma_client is not None and self.embedder is not None, "warmup() not called"
         chunks = self._collect_sources()
         if not chunks:
@@ -182,34 +235,74 @@ class MemoryIndex:
         graph_path = os.path.join(self.data_dir, "memory_graph.json")
         state_path = os.path.join(self.data_dir, "sync_state.json")
 
-        sources = sorted({c["metadata"]["source"] for c in chunks})
-        log.info("indexing %d chunks from %s", len(chunks), ", ".join(sources))
+        current_sources = sorted({c["metadata"]["source"] for c in chunks})
+        all_ids = self._assign_chunk_ids(chunks)
+        prev_hashes = self._load_prev_hashes()
+        # Full rebuild path: missing/legacy state, or every current source
+        # is in the changed set with no surviving entries.
+        full_rebuild = prev_hashes is None or (
+            set(changed) == set(current_sources) and not removed
+        )
 
         col_name = f"memory_{self.slug_safe}"
-        try:
-            self.chroma_client.delete_collection(col_name)
-        except Exception:
-            pass
-        col = self.chroma_client.create_collection(col_name, embedding_function=self.embedder)
+        if full_rebuild:
+            log.info("full reindex: %d chunks from %d sources",
+                     len(chunks), len(current_sources))
+            try:
+                self.chroma_client.delete_collection(col_name)
+            except Exception:
+                pass
+            col = self.chroma_client.create_collection(col_name, embedding_function=self.embedder)
+            documents = [c["content"] for c in chunks]
+            metadatas = [c["metadata"] for c in chunks]
+            col.upsert(ids=all_ids, documents=documents, metadatas=metadatas)
+        else:
+            log.info("incremental reindex: +%d changed -%d removed",
+                     len(changed), len(removed))
+            col = self.chroma_client.get_or_create_collection(
+                col_name, embedding_function=self.embedder
+            )
+            # Delete all chunks belonging to changed-or-removed sources;
+            # then upsert fresh chunks for the changed sources only. The
+            # per-source id scheme (_assign_chunk_ids) means surviving
+            # chunks' ids match what BM25 will write below.
+            for src in list(changed) + list(removed):
+                try:
+                    col.delete(where={"source": src})
+                except Exception:
+                    log.exception("failed to delete chunks for %s", src)
+            changed_set = set(changed)
+            up_ids: list[str] = []
+            up_docs: list[str] = []
+            up_metas: list[dict[str, Any]] = []
+            for chunk_id, c in zip(all_ids, chunks):
+                if c["metadata"]["source"] not in changed_set:
+                    continue
+                up_ids.append(chunk_id)
+                up_docs.append(c["content"])
+                up_metas.append(c["metadata"])
+            if up_ids:
+                col.upsert(ids=up_ids, documents=up_docs, metadatas=up_metas)
 
-        ids = [f"{c['metadata']['source']}:{i}" for i, c in enumerate(chunks)]
-        documents = [c["content"] for c in chunks]
-        metadatas = [c["metadata"] for c in chunks]
-        col.upsert(ids=ids, documents=documents, metadatas=metadatas)
-
+        # BM25 corpus is rebuilt from all current chunks every time —
+        # JSON dump is sub-millisecond and avoids any drift between the
+        # indexed set and the searched set.
         corpus = [
-            {"id": ids[i], "text": documents[i], "section": metadatas[i]["section"]}
+            {"id": all_ids[i], "text": chunks[i]["content"],
+             "section": chunks[i]["metadata"]["section"]}
             for i in range(len(chunks))
         ]
         self._atomic_write_json(bm25_path, corpus)
 
+        # Graph also rebuilt fully — cross-file "mentions" edges scan the
+        # global node set (see _build_graph), so any change can ripple.
         G = self._build_graph(chunks)
         self._atomic_write_json(graph_path, nx.node_link_data(G))
 
         state = {
             "agent_slug": self.slug_safe,
-            "sourcesHash": self._compute_sources_hash(),
-            "sources": sources,
+            "sourceHashes": self._compute_source_hashes(),
+            "sources": current_sources,
             "chromadbChunks": len(chunks),
             "graphNodes": G.number_of_nodes(),
             "graphEdges": G.number_of_edges(),
@@ -217,20 +310,28 @@ class MemoryIndex:
             "status": "synced",
         }
         self._atomic_write_json(state_path, state)
-        log.info("done: %d chunks, %d graph nodes", len(chunks), G.number_of_nodes())
         return {
             "status": "reindexed",
             "chunks": len(chunks),
             "graphNodes": G.number_of_nodes(),
-            "sources": sources,
+            "changed": changed if not full_rebuild else current_sources,
+            "removed": removed,
         }
 
     async def reindex_if_stale(self, force: bool = False) -> dict[str, Any]:
         async with self.lock:
             loop = asyncio.get_running_loop()
-            if not force and not await loop.run_in_executor(None, self.needs_reindex):
+            if force:
+                current = await loop.run_in_executor(
+                    None, lambda: sorted(self._compute_source_hashes().keys())
+                )
+                return await loop.run_in_executor(
+                    None, self.do_reindex, current, []
+                )
+            changed, removed = await loop.run_in_executor(None, self.needs_reindex)
+            if not changed and not removed:
                 return {"status": "in_sync"}
-            return await loop.run_in_executor(None, self.do_reindex)
+            return await loop.run_in_executor(None, self.do_reindex, changed, removed)
 
     # --- retrieval ----------------------------------------------------------
 
@@ -304,7 +405,7 @@ class MemoryIndex:
         try:
             with open(state_path) as f:
                 state = json.load(f)
-            if self._compute_sources_hash() != state.get("sourcesHash", ""):
+            if self._compute_source_hashes() != state.get("sourceHashes", {}):
                 state["status"] = "OUT_OF_SYNC"
             return state
         except Exception:
@@ -342,17 +443,3 @@ class MemoryIndex:
                 None,
                 functools.partial(self._build_markdown, query, top_n, compact),
             )
-
-
-async def reindex_loop(index: MemoryIndex, interval_s: int = 300) -> None:
-    """Background reindex task. Runs forever until cancelled."""
-    while True:
-        try:
-            await asyncio.sleep(interval_s)
-            result = await index.reindex_if_stale()
-            if result.get("status") == "reindexed":
-                log.info("background reindex: %s", result)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("background reindex failed")

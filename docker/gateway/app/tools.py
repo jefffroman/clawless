@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable
 import boto3
 
 from .config import Config
+from .memory import MemoryIndex
 
 log = logging.getLogger("clawless.tools")
 
@@ -244,9 +245,18 @@ async def _run_web_search(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
+async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> str:
     if not cfg.lifecycle_sfn_arn:
         return "error: LIFECYCLE_SFN_ARN not configured"
+
+    # Reindex any memory writes the agent just made before workspace sync_up
+    # (the entrypoint syncs on SIGTERM, which arrives shortly after the SFN
+    # update below). The flush itself is the agent's own behavior earlier in
+    # this conversation; here we just ensure the index reflects current files.
+    try:
+        await memory.reindex_if_stale()
+    except Exception:
+        log.exception("reindex on sleep failed; continuing with sleep")
 
     def _go() -> str:
         ssm = boto3.client("ssm", region_name=cfg.aws_region)
@@ -281,7 +291,7 @@ async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_registry(cfg: Config) -> dict[str, Tool]:
+def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
     tools = [
         Tool(
             name="bash",
@@ -374,7 +384,7 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
                 },
                 "required": [],
             },
-            run=functools.partial(_run_sleep, cfg),
+            run=functools.partial(_run_sleep, cfg, memory),
         ),
     ]
     return {t.name: t for t in tools}
