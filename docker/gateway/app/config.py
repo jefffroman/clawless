@@ -34,7 +34,9 @@ HARD_CEILING_TOKENS = 150_000
 # Maintenance loop check cadence (the loop wakes this often and fires
 # flush_then_reindex only for sessions whose growth-since-last-flush
 # exceeds PERIODIC_GROWTH_THRESHOLD).
-MAINTENANCE_INTERVAL_S = 1800
+# TEMP: 300s (5min) for easier observability while validating the new
+# triggers; revert to 1800 (30min) after the live behaviour is confirmed.
+MAINTENANCE_INTERVAL_S = 300
 
 # Token-growth gate for the maintenance loop: only fire flush+reindex
 # for a session if its tokens-since-last-flush exceeds this.
