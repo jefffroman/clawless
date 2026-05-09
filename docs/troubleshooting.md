@@ -56,6 +56,39 @@ aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
 
 The agent's `memory/` files are untouched — only the per-peer session JSONLs are archived.
 
+## Memory / flush / compaction
+
+See [memory.md](memory.md) for the full architecture. Common operational
+checks:
+
+**Confirm a session's flush state:**
+```bash
+aws s3 cp s3://clawless-backups-<account>/agents/<client>/<agent>/workspace/memory/.flush_state.json - --region us-east-1
+```
+Each entry is `"<sid>": "<iso-ts>"` — the high-water mark of the most
+recent successful flush. Missing entries mean the session has never been
+flushed (which is normal for fresh sessions and for first-deployment
+sessions, where existing transcripts are bootstrapped to "already
+flushed" to avoid a massive one-time backfill).
+
+**Watch flush activity live:**
+```bash
+aws logs tail /clawless/fargate/<client>-<agent> --follow --region us-east-1 \
+  | grep -E "flush|reindex|compaction"
+```
+
+**Reset a stuck index** (rare — only if `chroma_db` is corrupted or the
+`sync_state.json` is out of sync with the workspace markdown):
+```bash
+aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
+  --force-new-deployment --region us-east-1
+```
+The new task rebuilds the index from scratch on boot.
+
+**Disable periodic flush** (e.g., to control cost during a long passive
+session): set `CLAWLESS_PERIODIC_GROWTH_THRESHOLD` to a very high value
+(e.g., `999999999`) on the task definition env, then force-new-deployment.
+
 ## Lifecycle Lambda
 
 **Check recent invocations:**

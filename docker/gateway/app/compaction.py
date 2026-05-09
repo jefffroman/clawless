@@ -1,4 +1,4 @@
-"""Transcript compaction — idle (eager, at boot) and mid-session (synchronous).
+"""Transcript compaction — idle (eager, at boot) and mid-session (async).
 
 Two distinct triggers, two distinct headings, both summarized by the
 configured cheap model (Nova Micro by default):
@@ -6,16 +6,24 @@ configured cheap model (Nova Micro by default):
 * ``## Last Session Recap`` — runs eagerly during boot init when the prior
   session's last turn is older than IDLE_RECAP_SECONDS. Archives the old
   JSONL and prepends the recap as a system block on the new session.
+  Synchronous (pre-live).
 * ``## Pre-compaction Recap`` — runs mid-session when the estimated transcript
-  token count exceeds MID_SESSION_TOKEN_THRESHOLD. Sends a status notice via
-  the channel first, then summarizes the oldest half, and replaces those
-  turns with a single synthetic system block. The recent half is preserved.
+  token count exceeds the configured threshold. Runs as a background task
+  off the user-reply critical path: summarize against a snapshot, then take
+  the per-session lock and atomic-swap against the live transcript so any
+  user turns that arrived during summarize are preserved.
+
+If a transcript is still over ``hard_ceiling_tokens`` after the swap, the
+caller continues with ``run_hard_reset`` to drop the transcript to just the
+recap turn. Hard-reset does NOT re-flush — flush_then_reindex was already
+run earlier in the same compaction cycle.
 
 Summary blocks are stable across turns so they benefit from prompt caching.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -25,7 +33,6 @@ from .bedrock import BedrockClient
 from .channel import Channel
 from .config import (
     IDLE_RECAP_SECONDS,
-    MID_SESSION_TOKEN_THRESHOLD,
     Config,
 )
 from .transcript import (
@@ -33,6 +40,7 @@ from .transcript import (
     Turn,
     estimate_tokens,
     parse_iso,
+    render_turns_as_text,
 )
 
 log = logging.getLogger("clawless.compaction")
@@ -77,24 +85,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _turns_to_text(turns: list[Turn]) -> str:
-    """Render turns as a labeled transcript for the summarizer's eyes only."""
-    lines: list[str] = []
-    for t in turns:
-        for block in t.content:
-            if "text" in block and block["text"].strip():
-                lines.append(f"[{t.role}] {block['text'].strip()}")
-            elif "toolUse" in block:
-                tu = block["toolUse"]
-                lines.append(f"[{t.role} → tool {tu.get('name')}] input={tu.get('input')}")
-            elif "toolResult" in block:
-                inner = block["toolResult"].get("content", [])
-                txt = " ".join(b.get("text", "") for b in inner if "text" in b)
-                if txt:
-                    lines.append(f"[tool result] {txt[:400]}")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Idle recap (boot-time, eager)
 # ---------------------------------------------------------------------------
@@ -126,7 +116,7 @@ async def maybe_idle_recap(
     log.info("idle recap: session %s last activity %s ago, summarizing %d turns",
              sid, _human_delta(age), len(turns))
 
-    text = _turns_to_text(turns)
+    text = render_turns_as_text(turns)
     try:
         summary = await bedrock.summarize(
             model_id=cfg.compaction_model_id,
@@ -186,26 +176,48 @@ def _split_for_compaction(turns: list[Turn]) -> tuple[list[Turn], list[Turn]]:
     return turns[:cut], turns[cut:]
 
 
-async def maybe_mid_session_compact(
+def will_mid_session_compact(cfg: Config, turns: list[Turn]) -> bool:
+    """Predicate-only check (no I/O). The agent uses this to decide whether
+    to spawn a background compaction task on the user-reply critical path.
+    """
+    return estimate_tokens(turns) > cfg.mid_session_token_threshold
+
+
+async def run_mid_session_compact_async(
     *,
     cfg: Config,
     bedrock: BedrockClient,
     transcripts: TranscriptStore,
     channel: Channel,
+    session_lock: asyncio.Lock,
     sid: str,
     peer_id: str,
-    turns: list[Turn],
-) -> list[Turn]:
-    """If ``turns`` exceeds the threshold, send a status notice, summarize
-    the oldest half, replace those turns with a single recap turn, and return
-    the new turns list. Otherwise return ``turns`` unchanged.
-    """
-    if estimate_tokens(turns) <= MID_SESSION_TOKEN_THRESHOLD:
-        return turns
+    turns_snapshot: list[Turn],
+) -> tuple[bool, list[Turn]]:
+    """Run compaction off the user-reply critical path.
 
-    older, newer = _split_for_compaction(turns)
+    Computes the older/newer split + summarize() against ``turns_snapshot``
+    (which the caller captured at the moment compaction was decided to
+    fire). The snapshot's older portion becomes a single recap turn;
+    everything from the older boundary onward is preserved by re-reading
+    the on-disk transcript at swap time — so any user turns that arrived
+    during the summarize call survive.
+
+    Returns ``(swapped, post_swap_turns)``. ``swapped=False`` means the
+    predicate failed, the snapshot was too small to split, the summarize
+    call failed, or another compactor raced and shrunk the live
+    transcript past the snapshot's older boundary.
+
+    Caller is responsible for any flush_then_reindex BEFORE invoking this;
+    this function does not flush.
+    """
+    if not will_mid_session_compact(cfg, turns_snapshot):
+        return False, turns_snapshot
+
+    older, newer = _split_for_compaction(turns_snapshot)
     if not older:
-        return turns
+        return False, turns_snapshot
+    older_count = len(older)
 
     try:
         await channel.send(peer_id, MID_SESSION_NOTICE)
@@ -213,11 +225,11 @@ async def maybe_mid_session_compact(
         log.exception("could not send mid-session compaction notice; proceeding anyway")
 
     log.info(
-        "mid-session compaction: summarizing %d older turns, keeping %d recent",
-        len(older), len(newer),
+        "[%s] background compaction: summarizing %d older turns (snapshot=%d)",
+        sid, older_count, len(turns_snapshot),
     )
 
-    text = _turns_to_text(older)
+    text = render_turns_as_text(older)
     try:
         summary = await bedrock.summarize(
             model_id=cfg.compaction_model_id,
@@ -225,8 +237,8 @@ async def maybe_mid_session_compact(
             transcript_text=text,
         )
     except Exception:
-        log.exception("mid-session summarize failed; leaving transcript untouched")
-        return turns
+        log.exception("[%s] background compaction summarize failed", sid)
+        return False, turns_snapshot
 
     covers_from = older[0].ts
     covers_to = older[-1].ts
@@ -238,23 +250,81 @@ async def maybe_mid_session_compact(
         f"Compacted at: {compacted_at}.\n\n"
         f"{summary}"
     )
+    recap_turn = Turn(role="user", content=[{"text": block}], ts=compacted_at)
 
-    # Synthesize a single user turn carrying the recap as text. This shape
-    # replays cleanly into messages[] without needing a special role.
-    recap_turn = Turn(
-        role="user",
-        content=[{"text": block}],
-        ts=compacted_at,
+    # Atomic swap: under the session lock, re-read the live transcript (it
+    # may have grown during summarize), and slice from older_count onward —
+    # preserving the snapshot's newer portion AND any rows the agent
+    # appended while we were summarizing.
+    async with session_lock:
+        current = transcripts.load(sid)
+        if len(current) < older_count:
+            log.warning(
+                "[%s] background compaction skipped — transcript has %d turns "
+                "but snapshot's older count was %d (raced?)",
+                sid, len(current), older_count,
+            )
+            return False, current
+        preserved = current[older_count:]
+        new_turns = [recap_turn] + preserved
+        transcripts.replace(sid, new_turns)
+
+    log.info(
+        "[%s] background compaction swapped: %d turns -> %d turns",
+        sid, len(current), len(new_turns),
     )
-    new_turns = [recap_turn] + newer
-    transcripts.replace(sid, new_turns)
-    return new_turns
+    return True, new_turns
+
+
+# ---------------------------------------------------------------------------
+# Hard reset (post-compaction continuation, no flush)
+# ---------------------------------------------------------------------------
+
+
+async def run_hard_reset(
+    *,
+    cfg: Config,
+    transcripts: TranscriptStore,
+    session_lock: asyncio.Lock,
+    sid: str,
+    post_swap_turns: list[Turn],
+) -> bool:
+    """If the post-compaction transcript still exceeds ``hard_ceiling_tokens``,
+    replace it with just the recap turn. The caller has already run
+    flush_then_reindex earlier in the same compaction cycle; we do NOT
+    flush again here.
+
+    Returns True if a reset happened, False if no action was taken
+    (under-ceiling or empty transcript).
+    """
+    size = estimate_tokens(post_swap_turns)
+    if size <= cfg.hard_ceiling_tokens:
+        return False
+    log.warning(
+        "[%s] post-compaction over hard ceiling (%d > %d); hard-reset to recap-only",
+        sid, size, cfg.hard_ceiling_tokens,
+    )
+    async with session_lock:
+        current = transcripts.load(sid)
+        if not current:
+            return False
+        recap = current[0]
+        # Preserve anything appended during the unlock window between the
+        # compact-swap and this call (defensive; usually empty).
+        appended_during_window = current[len(post_swap_turns):]
+        new_turns = [recap] + appended_during_window
+        transcripts.replace(sid, new_turns)
+    log.info("[%s] hard-reset complete: transcript reduced to %d turn(s)",
+             sid, len(new_turns))
+    return True
 
 
 __all__ = [
     "MID_SESSION_NOTICE",
     "maybe_idle_recap",
-    "maybe_mid_session_compact",
+    "will_mid_session_compact",
+    "run_mid_session_compact_async",
+    "run_hard_reset",
 ]
 
 

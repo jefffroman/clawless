@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable
 import boto3
 
 from .config import Config
+from .memory import MemoryIndex
 
 log = logging.getLogger("clawless.tools")
 
@@ -177,6 +178,26 @@ async def _run_write_file(cfg: Config, args: dict[str, Any]) -> str:
     return f"wrote {len(content)} chars to {rel}"
 
 
+async def _run_append_file(cfg: Config, args: dict[str, Any]) -> str:
+    rel = args.get("path", "")
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        return "error: content must be a string"
+    try:
+        path = _resolve_scoped(cfg.workspace_dir, rel)
+    except PathScopeError as e:
+        return f"error: {e}"
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    # POSIX guarantees O_APPEND writes are atomic up to PIPE_BUF; for the
+    # scale of memory-file appends this is effectively always-atomic. No
+    # tmp+rename dance needed because we're not replacing the file.
+    with open(path, "a") as f:
+        f.write(content)
+    return f"appended {len(content)} chars to {rel}"
+
+
 async def _run_list_dir(cfg: Config, args: dict[str, Any]) -> str:
     rel = args.get("path", ".")
     try:
@@ -244,9 +265,18 @@ async def _run_web_search(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
+async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> str:
     if not cfg.lifecycle_sfn_arn:
         return "error: LIFECYCLE_SFN_ARN not configured"
+
+    # Reindex any memory writes the agent just made before workspace sync_up
+    # (the entrypoint syncs on SIGTERM, which arrives shortly after the SFN
+    # update below). The flush itself is the agent's own behavior earlier in
+    # this conversation; here we just ensure the index reflects current files.
+    try:
+        await memory.reindex_if_stale()
+    except Exception:
+        log.exception("reindex on sleep failed; continuing with sleep")
 
     def _go() -> str:
         ssm = boto3.client("ssm", region_name=cfg.aws_region)
@@ -281,7 +311,7 @@ async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_registry(cfg: Config) -> dict[str, Tool]:
+def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
     tools = [
         Tool(
             name="bash",
@@ -317,7 +347,8 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
             name="write_file",
             description=(
                 "Atomically write content to a path inside the agent's workspace. "
-                "Creates parent directories. Overwrites existing files."
+                "Creates parent directories. Overwrites existing files — for "
+                "adding to an accumulating notes file, prefer `append_file`."
             ),
             input_schema={
                 "type": "object",
@@ -328,6 +359,24 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
                 "required": ["path", "content"],
             },
             run=functools.partial(_run_write_file, cfg),
+        ),
+        Tool(
+            name="append_file",
+            description=(
+                "Append text to a file inside the agent's workspace. Creates "
+                "the file (and parent directories) if missing. Use this for "
+                "daily-note additions like `memory/YYYY-MM-DD.md` — it adds at "
+                "the end without risking overwrite of prior entries."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+            run=functools.partial(_run_append_file, cfg),
         ),
         Tool(
             name="list_dir",
@@ -374,7 +423,7 @@ def build_registry(cfg: Config) -> dict[str, Tool]:
                 },
                 "required": [],
             },
-            run=functools.partial(_run_sleep, cfg),
+            run=functools.partial(_run_sleep, cfg, memory),
         ),
     ]
     return {t.name: t for t in tools}

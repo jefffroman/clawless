@@ -21,9 +21,24 @@ _BEDROCK_PREFIX = "bedrock/"
 COMPACTION_MODEL_DEFAULT = "us.amazon.nova-micro-v1:0"
 
 # Estimated token threshold above which mid-session compaction kicks in.
-# Naive len/4 estimator; we err on the conservative side and let prompt-cache
-# soak up the rebuilt prefix.
-MID_SESSION_TOKEN_THRESHOLD = 24_000
+# Naive len/4 estimator. Bedrock-Haiku with prompt caching handles large
+# context cheaply, so this fires rarely (~once per long session) rather
+# than every few turns.
+MID_SESSION_TOKEN_THRESHOLD = 96_000
+
+# Hard ceiling: if a transcript is still over this after compaction's
+# atomic-swap, fire hard-reset (replace with recap-only). Leaves 50K
+# headroom under Bedrock's 200K input cap.
+HARD_CEILING_TOKENS = 150_000
+
+# Maintenance loop check cadence (the loop wakes this often and fires
+# flush_then_reindex only for sessions whose growth-since-last-flush
+# exceeds PERIODIC_GROWTH_THRESHOLD).
+MAINTENANCE_INTERVAL_S = 1800
+
+# Token-growth gate for the maintenance loop: only fire flush+reindex
+# for a session if its tokens-since-last-flush exceeds this.
+PERIODIC_GROWTH_THRESHOLD = 8_000
 
 # Idle threshold for wake-time recap: anything older than this gets summarized
 # into a "Last Session Recap" block prepended to the new session's prompt.
@@ -77,6 +92,12 @@ class Config:
 
     compaction_model_id: str = COMPACTION_MODEL_DEFAULT
 
+    # Compaction / flush thresholds — env-overridable for tuning + smoke tests.
+    mid_session_token_threshold: int = MID_SESSION_TOKEN_THRESHOLD
+    hard_ceiling_tokens: int = HARD_CEILING_TOKENS
+    maintenance_interval_s: int = MAINTENANCE_INTERVAL_S
+    periodic_growth_threshold: int = PERIODIC_GROWTH_THRESHOLD
+
     @property
     def memory_source_dir(self) -> str:
         # New layout: workspace files live directly under WORKSPACE_DIR/memory/
@@ -100,6 +121,16 @@ def _bool(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on")
+
+
+def _int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"env var {name}={raw!r} is not an integer") from None
 
 
 def load() -> Config:
@@ -134,5 +165,17 @@ def load() -> Config:
         compaction_model_id=_strip_bedrock_prefix(
             os.environ.get("CLAWLESS_COMPACTION_MODEL", "").strip()
             or COMPACTION_MODEL_DEFAULT
+        ),
+        mid_session_token_threshold=_int(
+            "CLAWLESS_MID_SESSION_TOKEN_THRESHOLD", MID_SESSION_TOKEN_THRESHOLD,
+        ),
+        hard_ceiling_tokens=_int(
+            "CLAWLESS_HARD_CEILING_TOKENS", HARD_CEILING_TOKENS,
+        ),
+        maintenance_interval_s=_int(
+            "CLAWLESS_MAINTENANCE_INTERVAL_S", MAINTENANCE_INTERVAL_S,
+        ),
+        periodic_growth_threshold=_int(
+            "CLAWLESS_PERIODIC_GROWTH_THRESHOLD", PERIODIC_GROWTH_THRESHOLD,
         ),
     )

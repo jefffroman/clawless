@@ -9,7 +9,9 @@ Boot order:
 5. Start /health endpoint (binds 127.0.0.1:18789, /health returns ok=true).
 6. Replay queued wake messages from DynamoDB (claim-deliver-delete).
 7. Start telegram long-polling.
-8. Reindex loop runs forever in the background.
+8. Maintenance loop runs forever in the background — every
+   ``maintenance_interval_s`` it fires flush_then_reindex for sessions
+   whose growth-since-last-flush exceeds ``periodic_growth_threshold``.
 
 Shutdown (SIGTERM/SIGINT):
 
@@ -17,7 +19,7 @@ Shutdown (SIGTERM/SIGINT):
 2. Install wake_listener webhook (so messages during sync_up route to the
    Lambda, not a dying gateway).
 3. Stop /health.
-4. Cancel reindex loop.
+4. Cancel maintenance loop.
 5. Exit cleanly. The shell entrypoint owns sync_up to S3 after we exit.
 """
 
@@ -35,11 +37,39 @@ from .agent import Agent
 from .bedrock import BedrockClient
 from .channel import build_channel
 from .health import HealthServer
-from .memory import MemoryIndex, reindex_loop
+from .memory import MemoryIndex
 from .tools import build_registry
 from .transcript import TranscriptStore
 from .wake_greet import wake_greet
 from .webhook import install_wake_listener_webhook
+
+
+async def _maintenance_loop(agent: Agent) -> None:
+    """Periodic flush_then_reindex for sessions with token-growth past
+    threshold. Runs forever until cancelled.
+
+    Each tick: for each known session, if growth-since-last-flush exceeds
+    ``periodic_growth_threshold``, fire ``agent.flush_session`` (which
+    handles the per-sid lock and incremental window).
+    """
+    cfg = agent.cfg
+    log_main = logging.getLogger("clawless.maintenance")
+    while True:
+        try:
+            await asyncio.sleep(cfg.maintenance_interval_s)
+            for sid in agent.known_session_ids():
+                growth = agent.session_growth(sid)
+                if growth < cfg.periodic_growth_threshold:
+                    continue
+                log_main.info(
+                    "[%s] periodic flush+reindex triggered (growth=%d tokens)",
+                    sid, growth,
+                )
+                await agent.flush_session(sid, reason="periodic-growth")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log_main.exception("maintenance loop iteration failed")
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -73,7 +103,7 @@ async def _main() -> int:
         slug_safe=cfg.slug_safe,
     )
     bedrock = BedrockClient(cfg)
-    tools = build_registry(cfg)
+    tools = build_registry(cfg, memory)
     transcripts = TranscriptStore(cfg.transcripts_dir)
     channel = build_channel(cfg)
 
@@ -85,6 +115,24 @@ async def _main() -> int:
         transcripts=transcripts,
         channel=channel,
     )
+
+    # Auto pre-sleep flush: wrap the sleep tool's run so it always runs
+    # flush_then_reindex first, regardless of whether the agent chose to
+    # write durable knowledge itself. The inner _run_sleep still does its
+    # own reindex_if_stale as a safety net (no-op if flush already
+    # reindexed).
+    sleep_tool = tools.get("sleep")
+    if sleep_tool is not None:
+        _inner_sleep_run = sleep_tool.run
+
+        async def _sleep_with_flush(args: dict[str, Any]) -> str:
+            try:
+                await agent.flush_all_sessions_before_sleep()
+            except Exception:
+                log.exception("pre-sleep flush wrapper failed; continuing with sleep")
+            return await _inner_sleep_run(args)
+
+        sleep_tool.run = _sleep_with_flush
 
     health = HealthServer(cfg)
     await health.start()
@@ -103,6 +151,16 @@ async def _main() -> int:
     except Exception:
         log.exception("boot idle-recap pass failed; continuing")
 
+    # Initialize incremental-flush high-water marks for any pre-existing
+    # sessions on disk. Sessions without an entry in flush_state.json get
+    # their last-turn ts written, so historical content is treated as
+    # already-flushed and the next periodic pass doesn't trigger a massive
+    # one-time flush of pre-deployment transcripts.
+    try:
+        agent.init_flush_state_for_existing()
+    except Exception:
+        log.exception("flush-state init failed; continuing")
+
     # Drain wake queue (or fire a synthetic greeting if empty) before going
     # live so the user's queued message is the first turn after wake — and so
     # operator-initiated wakes still surface a "Hello <agent>" reply.
@@ -117,7 +175,9 @@ async def _main() -> int:
     await channel.start(agent.handle_inbound)
     health.mark_ready()
 
-    reindex_task = asyncio.create_task(reindex_loop(memory), name="reindex-loop")
+    maintenance_task = asyncio.create_task(
+        _maintenance_loop(agent), name="maintenance-loop",
+    )
 
     stop_event = asyncio.Event()
 
@@ -135,9 +195,9 @@ async def _main() -> int:
     await stop_event.wait()
     log.info("shutting down")
 
-    reindex_task.cancel()
+    maintenance_task.cancel()
     try:
-        await reindex_task
+        await maintenance_task
     except (asyncio.CancelledError, Exception):
         pass
 

@@ -7,17 +7,24 @@ in the transcript store keyed by ``session_id``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
 
 from .bedrock import BedrockClient
 from .channel import Channel, InboundMessage
-from .compaction import maybe_idle_recap, maybe_mid_session_compact
+from .compaction import (
+    maybe_idle_recap,
+    run_hard_reset,
+    run_mid_session_compact_async,
+    will_mid_session_compact,
+)
 from .config import Config
 from .memory import MemoryIndex
+from .memory_flush import flush_then_reindex
 from .tools import Tool, bedrock_tool_config
-from .transcript import TranscriptStore, session_id
+from .transcript import TranscriptStore, Turn, estimate_tokens, session_id
 
 log = logging.getLogger("clawless.agent")
 
@@ -49,6 +56,25 @@ class Agent:
         self._idle_recapped: set[str] = set()
         self._idle_recap_blocks: dict[str, str] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        # Sessions with a background compaction task in flight; prevents
+        # spawning a second compactor while one is still running.
+        self._bg_compaction_sids: set[str] = set()
+        # Sessions with a flush_then_reindex in flight; a triggered flush
+        # for an sid already in this set is skipped (logged but a no-op),
+        # not queued. asyncio is single-threaded so check-and-add is atomic
+        # as long as no `await` interleaves between them.
+        self._flushing_sids: set[str] = set()
+        # Strong refs to background tasks — asyncio holds only weak refs to
+        # tasks created via create_task, so unreferenced tasks may be GC'd
+        # mid-execution. Discard each task on completion.
+        self._bg_tasks: set[asyncio.Task[None]] = set()
+        # Per-session ISO ts of the newest turn included in the most recent
+        # successful flush. Persisted across restarts in flush_state.json so
+        # incremental flush survives sleep/wake.
+        self._flush_state_path = os.path.join(
+            cfg.memory_source_dir, ".flush_state.json"
+        )
+        self._last_flush_ts: dict[str, str] = self._load_flush_state()
 
     def _load_system_template(self) -> str:
         path = os.path.join(os.path.dirname(__file__), "system_prompt.md")
@@ -58,6 +84,73 @@ class Agent:
         except OSError:
             return "You are a helpful AI agent."
 
+    # --- flush-state persistence -------------------------------------------
+
+    def _load_flush_state(self) -> dict[str, str]:
+        try:
+            with open(self._flush_state_path) as f:
+                obj = json.load(f)
+            if isinstance(obj, dict):
+                return {str(k): str(v) for k, v in obj.items()}
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        except Exception:
+            log.exception("failed to load flush state; starting fresh")
+        return {}
+
+    def _save_flush_state(self) -> None:
+        os.makedirs(os.path.dirname(self._flush_state_path), exist_ok=True)
+        tmp = f"{self._flush_state_path}.tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(self._last_flush_ts, f, indent=2)
+            os.replace(tmp, self._flush_state_path)
+        except OSError:
+            log.exception("failed to persist flush state")
+
+    def mark_flushed(self, sid: str, last_ts: str) -> None:
+        """Advance the per-session high-water mark and persist."""
+        if not last_ts:
+            return
+        self._last_flush_ts[sid] = last_ts
+        self._save_flush_state()
+
+    def session_growth(self, sid: str) -> int:
+        """Estimate tokens of turns whose ts > last-flush mark."""
+        since = self._last_flush_ts.get(sid, "")
+        new_turns = [t for t in self.transcripts.load(sid) if t.ts > since]
+        return estimate_tokens(new_turns)
+
+    def known_session_ids(self) -> list[str]:
+        """All session IDs with on-disk transcripts (live, not archived)."""
+        if not os.path.isdir(self.cfg.transcripts_dir):
+            return []
+        sids: list[str] = []
+        for entry in os.listdir(self.cfg.transcripts_dir):
+            if not entry.endswith(".jsonl"):
+                continue
+            if _is_archived_transcript(entry):
+                continue
+            sids.append(entry[:-len(".jsonl")])
+        return sids
+
+    def init_flush_state_for_existing(self) -> None:
+        """Initialize ``_last_flush_ts`` for any session present on disk
+        with no entry yet — set to the last turn's ts so historical content
+        is treated as already-flushed (avoids a one-time massive flush of
+        pre-existing transcripts on first deployment of incremental flush).
+        """
+        changed = False
+        for sid in self.known_session_ids():
+            if sid in self._last_flush_ts:
+                continue
+            last_ts = self.transcripts.last_ts(sid)
+            if last_ts:
+                self._last_flush_ts[sid] = last_ts
+                changed = True
+        if changed:
+            self._save_flush_state()
+
     def _system_for(self, recap_block: str | None, retrieval_block: str | None) -> list[dict[str, Any]]:
         rendered = self.system_template.replace("{AGENT_NAME}", self.cfg.agent_name)
         rendered = rendered.replace("${WORKSPACE_DIR}", self.cfg.workspace_dir)
@@ -66,6 +159,54 @@ class Agent:
             parts.append(recap_block)
         if retrieval_block:
             parts.append(retrieval_block)
+        return [{"text": "\n\n".join(parts)}]
+
+    async def _build_flush_system_block(self) -> list[dict[str, Any]]:
+        """Flush-specific system block: rendered system template + USER.md
+        verbatim + a retrieval block targeting memory-curation guidance.
+
+        We deliberately do NOT inline every ROOT_SOURCES file: MEMORY.md
+        can grow large over an agent's lifetime, and dumping it every flush
+        is expensive once an agent has been around for a while. Instead:
+
+        - USER.md inlined: small, identity-grounding, helps the flush
+          agent decide what's relevant to "the user" the conversation is
+          about.
+        - Retrieval hits for "memory flush remember durable knowledge":
+          surfaces any memory-curation patterns the agent has previously
+          captured (in MEMORY.md, daily notes, AGENTS.md, etc.) — bounded
+          by RRF top-N, scales gracefully with index size.
+
+        Daily notes (memory/YYYY-MM-DD.md) reach this block via retrieval
+        if they happen to be relevant; not inlined directly because flush
+        is exactly what's producing them and would otherwise grow unbounded.
+        """
+        rendered = self.system_template.replace("{AGENT_NAME}", self.cfg.agent_name)
+        rendered = rendered.replace("${WORKSPACE_DIR}", self.cfg.workspace_dir)
+        parts = [rendered]
+
+        # USER.md inline — small, stable, identity-grounding.
+        user_md_path = os.path.join(self.cfg.memory_source_dir, "USER.md")
+        try:
+            with open(user_md_path) as f:
+                user_md = f.read().strip()
+            if user_md:
+                parts.append(f"## memory/USER.md\n\n{user_md}")
+        except (FileNotFoundError, OSError):
+            pass
+
+        # Targeted retrieval over the agent's own memory files for any
+        # flush/curation guidance the agent has previously written.
+        try:
+            retrieval = await self.memory.retrieve_markdown(
+                "memory flush remember durable knowledge",
+                top_n=8, compact=False,
+            )
+            if retrieval.strip():
+                parts.append(retrieval)
+        except Exception:
+            log.exception("flush system block retrieval failed; continuing without")
+
         return [{"text": "\n\n".join(parts)}]
 
     async def boot_recap_known_sessions(self) -> None:
@@ -138,15 +279,22 @@ class Agent:
         self.transcripts.append(sid, "user", [{"text": user_text}])
 
         turns = self.transcripts.load(sid)
-        turns = await maybe_mid_session_compact(
-            cfg=self.cfg,
-            bedrock=self.bedrock,
-            transcripts=self.transcripts,
-            channel=self.channel,
-            sid=sid,
-            peer_id=msg.peer_id,
-            turns=turns,
-        )
+
+        # Spawn a background compaction task if the threshold is tripped and
+        # one isn't already running. The user reply path proceeds against
+        # ``turns`` (full uncompacted history); the bg task will rewrite the
+        # on-disk transcript after the user reply finishes (it acquires the
+        # session lock for the swap). A flush_then_reindex precedes the
+        # compaction inside the bg task.
+        if (sid not in self._bg_compaction_sids
+                and will_mid_session_compact(self.cfg, turns)):
+            self._bg_compaction_sids.add(sid)
+            task = asyncio.create_task(
+                self._run_bg_compaction(sid, list(turns), msg.peer_id),
+                name=f"compact-{sid}",
+            )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
         history = [t.as_message() for t in turns]
         system = self._system_for(recap_block, retrieval_block)
@@ -169,3 +317,91 @@ class Agent:
 
         if final_text.strip():
             await self.channel.send(msg.peer_id, final_text.strip())
+
+    async def flush_session(self, sid: str, reason: str) -> None:
+        """Run flush_then_reindex for one session under the per-session
+        flush lock. Skips silently (logged) if another flush is already
+        in flight for the same sid — flushes are not queued, just
+        deduplicated.
+
+        Caller-supplied ``reason`` becomes the log label
+        ("pre-sleep" / "pre-compact" / "periodic-growth").
+        """
+        # Check-and-add must not be interleaved with await between the two
+        # operations; asyncio is single-threaded so this is atomic.
+        if sid in self._flushing_sids:
+            log.info(
+                "[%s] flush skipped (reason=%s): another flush in flight",
+                sid, reason,
+            )
+            return
+        self._flushing_sids.add(sid)
+        try:
+            turns = self.transcripts.load(sid)
+            latest_ts = await flush_then_reindex(
+                bedrock=self.bedrock,
+                memory_index=self.memory,
+                sid=sid,
+                turns=turns,
+                since_ts=self._last_flush_ts.get(sid),
+                primary_model_id=self.cfg.model_id,
+                tools=self.tools,
+                tool_config=self.tool_config,
+                system_block=await self._build_flush_system_block(),
+                reason=reason,
+                tz_name=None,
+            )
+            if latest_ts:
+                self.mark_flushed(sid, latest_ts)
+        except Exception:
+            log.exception("[%s] flush_then_reindex failed (reason=%s)", sid, reason)
+        finally:
+            self._flushing_sids.discard(sid)
+
+    async def flush_all_sessions_before_sleep(self) -> None:
+        """Run flush_session for every known session before SIGTERM.
+
+        Called by the sleep-tool wrapper so durable knowledge is captured
+        regardless of whether the agent chose to write anything itself
+        during the sleep dialogue.
+        """
+        for sid in self.known_session_ids():
+            await self.flush_session(sid, reason="pre-sleep")
+
+    async def _run_bg_compaction(
+        self, sid: str, snapshot: list[Turn], peer_id: str,
+    ) -> None:
+        """Background compaction task: flush_then_reindex (incremental
+        window over the snapshot), then mid-session compaction with
+        atomic-swap, then hard-reset if still over the hard ceiling.
+
+        Runs concurrently with the user-reply turn for the inbound message
+        that tripped the threshold. The summarize and flush calls happen
+        without holding the session lock; the swap takes the lock briefly.
+        """
+        lock = self._session_locks.setdefault(sid, asyncio.Lock())
+        try:
+            await self.flush_session(sid, reason="pre-compact")
+
+            swapped, post_turns = await run_mid_session_compact_async(
+                cfg=self.cfg,
+                bedrock=self.bedrock,
+                transcripts=self.transcripts,
+                channel=self.channel,
+                session_lock=lock,
+                sid=sid,
+                peer_id=peer_id,
+                turns_snapshot=snapshot,
+            )
+            if swapped:
+                await run_hard_reset(
+                    cfg=self.cfg,
+                    transcripts=self.transcripts,
+                    session_lock=lock,
+                    sid=sid,
+                    post_swap_turns=post_turns,
+                )
+        except Exception:
+            log.exception("[%s] background compaction task failed", sid)
+        finally:
+            self._bg_compaction_sids.discard(sid)
