@@ -40,6 +40,7 @@ from .transcript import (
     Turn,
     estimate_tokens,
     parse_iso,
+    render_turns_as_text,
 )
 
 log = logging.getLogger("clawless.compaction")
@@ -84,24 +85,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _turns_to_text(turns: list[Turn]) -> str:
-    """Render turns as a labeled transcript for the summarizer's eyes only."""
-    lines: list[str] = []
-    for t in turns:
-        for block in t.content:
-            if "text" in block and block["text"].strip():
-                lines.append(f"[{t.role}] {block['text'].strip()}")
-            elif "toolUse" in block:
-                tu = block["toolUse"]
-                lines.append(f"[{t.role} → tool {tu.get('name')}] input={tu.get('input')}")
-            elif "toolResult" in block:
-                inner = block["toolResult"].get("content", [])
-                txt = " ".join(b.get("text", "") for b in inner if "text" in b)
-                if txt:
-                    lines.append(f"[tool result] {txt[:400]}")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Idle recap (boot-time, eager)
 # ---------------------------------------------------------------------------
@@ -133,7 +116,7 @@ async def maybe_idle_recap(
     log.info("idle recap: session %s last activity %s ago, summarizing %d turns",
              sid, _human_delta(age), len(turns))
 
-    text = _turns_to_text(turns)
+    text = render_turns_as_text(turns)
     try:
         summary = await bedrock.summarize(
             model_id=cfg.compaction_model_id,
@@ -246,7 +229,7 @@ async def run_mid_session_compact_async(
         sid, older_count, len(turns_snapshot),
     )
 
-    text = _turns_to_text(older)
+    text = render_turns_as_text(older)
     try:
         summary = await bedrock.summarize(
             model_id=cfg.compaction_model_id,

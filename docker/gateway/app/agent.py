@@ -21,7 +21,7 @@ from .compaction import (
     will_mid_session_compact,
 )
 from .config import Config
-from .memory import MemoryIndex
+from .memory import ROOT_SOURCES, MemoryIndex
 from .memory_flush import flush_then_reindex
 from .tools import Tool, bedrock_tool_config
 from .transcript import TranscriptStore, Turn, estimate_tokens, session_id
@@ -159,6 +159,44 @@ class Agent:
             parts.append(recap_block)
         if retrieval_block:
             parts.append(retrieval_block)
+        return [{"text": "\n\n".join(parts)}]
+
+    def _build_flush_system_block(self) -> list[dict[str, Any]]:
+        """Flush-specific system block: rendered system template PLUS a
+        snapshot of top-level memory files (MEMORY.md, USER.md, AGENTS.md,
+        etc.). The flush agent uses these to decide what's already
+        captured vs. what's genuinely new in the conversation excerpt.
+
+        Daily notes (memory/YYYY-MM-DD.md) are intentionally excluded —
+        those are exactly what flush is producing, so feeding them back
+        in would be circular and grow unbounded.
+        """
+        rendered = self.system_template.replace("{AGENT_NAME}", self.cfg.agent_name)
+        rendered = rendered.replace("${WORKSPACE_DIR}", self.cfg.workspace_dir)
+        parts = [rendered]
+
+        memory_sections: list[str] = []
+        for fname in ROOT_SOURCES:
+            fpath = os.path.join(self.cfg.memory_source_dir, fname)
+            try:
+                with open(fpath) as f:
+                    content = f.read()
+            except (FileNotFoundError, OSError):
+                continue
+            if not content.strip():
+                continue
+            memory_sections.append(f"### memory/{fname}\n{content.rstrip()}")
+
+        if memory_sections:
+            parts.append(
+                "## Memory files (current state)\n\n"
+                "Snapshot of your top-level memory files. Cross-reference "
+                "against these when deciding what durable knowledge from the "
+                "conversation excerpt is worth appending — skip what's "
+                "already captured here.\n\n"
+                + "\n\n".join(memory_sections)
+            )
+
         return [{"text": "\n\n".join(parts)}]
 
     async def boot_recap_known_sessions(self) -> None:
@@ -299,7 +337,7 @@ class Agent:
                 primary_model_id=self.cfg.model_id,
                 tools=self.tools,
                 tool_config=self.tool_config,
-                system_block=self._system_for(None, None),
+                system_block=self._build_flush_system_block(),
                 reason=reason,
                 tz_name=None,
             )

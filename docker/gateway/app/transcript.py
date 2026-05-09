@@ -153,6 +153,32 @@ def estimate_tokens(turns: list[Turn]) -> int:
     return chars // 4
 
 
+def render_turns_as_text(turns: list[Turn]) -> str:
+    """Render turns as a labeled transcript suitable for embedding inside
+    another model's prompt as data (not as multi-turn history).
+
+    Tool use/result blocks are included with input args and a truncated
+    result snippet so summarizers and flush turns can see what tools were
+    used. Used by both compaction (mid-session summarizer) and memory_flush
+    (durable-knowledge capture) — both want the conversation as inert data,
+    not as a dialogue the model is participating in.
+    """
+    lines: list[str] = []
+    for t in turns:
+        for block in t.content:
+            if "text" in block and block["text"].strip():
+                lines.append(f"[{t.role}] {block['text'].strip()}")
+            elif "toolUse" in block:
+                tu = block["toolUse"]
+                lines.append(f"[{t.role} → tool {tu.get('name')}] input={tu.get('input')}")
+            elif "toolResult" in block:
+                inner = block["toolResult"].get("content", [])
+                txt = " ".join(b.get("text", "") for b in inner if "text" in b)
+                if txt:
+                    lines.append(f"[tool result] {txt[:400]}")
+    return "\n".join(lines)
+
+
 def parse_iso(ts: str) -> float:
     """Return a unix timestamp from an ISO-8601 string."""
     try:
