@@ -178,6 +178,26 @@ async def _run_write_file(cfg: Config, args: dict[str, Any]) -> str:
     return f"wrote {len(content)} chars to {rel}"
 
 
+async def _run_append_file(cfg: Config, args: dict[str, Any]) -> str:
+    rel = args.get("path", "")
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        return "error: content must be a string"
+    try:
+        path = _resolve_scoped(cfg.workspace_dir, rel)
+    except PathScopeError as e:
+        return f"error: {e}"
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    # POSIX guarantees O_APPEND writes are atomic up to PIPE_BUF; for the
+    # scale of memory-file appends this is effectively always-atomic. No
+    # tmp+rename dance needed because we're not replacing the file.
+    with open(path, "a") as f:
+        f.write(content)
+    return f"appended {len(content)} chars to {rel}"
+
+
 async def _run_list_dir(cfg: Config, args: dict[str, Any]) -> str:
     rel = args.get("path", ".")
     try:
@@ -327,7 +347,8 @@ def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
             name="write_file",
             description=(
                 "Atomically write content to a path inside the agent's workspace. "
-                "Creates parent directories. Overwrites existing files."
+                "Creates parent directories. Overwrites existing files — for "
+                "adding to an accumulating notes file, prefer `append_file`."
             ),
             input_schema={
                 "type": "object",
@@ -338,6 +359,24 @@ def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
                 "required": ["path", "content"],
             },
             run=functools.partial(_run_write_file, cfg),
+        ),
+        Tool(
+            name="append_file",
+            description=(
+                "Append text to a file inside the agent's workspace. Creates "
+                "the file (and parent directories) if missing. Use this for "
+                "daily-note additions like `memory/YYYY-MM-DD.md` — it adds at "
+                "the end without risking overwrite of prior entries."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+            run=functools.partial(_run_append_file, cfg),
         ),
         Tool(
             name="list_dir",

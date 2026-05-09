@@ -37,8 +37,8 @@ Step Functions → DynamoDB (pending) → Lifecycle Lambda
 - **Channel-triggered wake**: When a sleeping agent receives a Telegram message, the wake-listener Lambda queues it in DynamoDB, sets `/active=true`, and triggers the lifecycle SFN. The gateway claims the queue row on boot, replays the message, and deletes the row only after the reply is sent (claim-deliver-delete; PII does not accumulate).
 - **No SSH, no instances**: Fargate tasks are ephemeral. Debug via CloudWatch logs or `aws ecs execute-command`.
 - **Agent memory**: Human-editable Markdown under `memory/`. Hybrid retrieval (BM25 + ChromaDB ONNX vectors + NetworkX knowledge graph, fused via RRF) prepends relevant chunks to every prompt — no manual search needed.
-- **Compaction**: Long sessions get summarized via Nova Micro into `## Last Session Recap` (eager at boot when prior session >1 h idle) or `## Pre-compaction Recap` (mid-conversation when transcript exceeds 24k tokens). Recap blocks are stable across turns and benefit from prompt caching.
-- **Built-in tools**: `bash`, `read_file`, `write_file`, `list_dir`, `web_search` (via shared SearXNG Lambda — no API keys), and `sleep`. The `bash` subshell runs as a separate UID with no access to AWS task-role credentials, so it cannot signal, modify, or AWS-pivot the gateway.
+- **Compaction**: Long sessions get summarized via Nova Micro into `## Last Session Recap` (eager at boot when prior session >1 h idle) or `## Pre-compaction Recap` (mid-conversation when transcript exceeds 96k tokens). Mid-session compaction runs as a background task off the user-reply path. Recap blocks are stable across turns and benefit from prompt caching.
+- **Built-in tools**: `bash`, `read_file`, `write_file`, `append_file`, `list_dir`, `web_search` (via shared SearXNG Lambda — no API keys), and `sleep`. The `bash` subshell runs as a separate UID with no access to AWS task-role credentials, so it cannot signal, modify, or AWS-pivot the gateway.
 - **Lifecycle automation**: All agent operations driven by a single Step Functions invocation. See [docs/lifecycle.md](docs/lifecycle.md).
 
 ---

@@ -24,9 +24,12 @@ each turn and prepends an `## Auto-Retrieved Memory Context` block to your
 prompt. **You do not need to manually search memory** — relevant chunks are
 already there. Your job is to keep the source files curated.
 
-To curate memory, use the `read_file` and `write_file` tools on paths like
-`memory/MEMORY.md`. Both are scoped to the workspace; relative paths are
-preferred.
+To curate memory, use the `read_file`, `write_file`, and `append_file`
+tools on paths like `memory/MEMORY.md`. Prefer `append_file` for
+daily-note additions (`memory/YYYY-MM-DD.md`) — it adds at the end without
+risk of overwriting prior entries. Use `write_file` only when you need to
+replace a file's contents wholesale. All three are scoped to the workspace
+and relative paths are preferred.
 
 ## Sleep protocol
 
@@ -52,7 +55,7 @@ Treat these as ground truth about the conversation history.
 ## Tools
 
 - `bash` — run shell commands inside the workspace. 60-second timeout.
-- `read_file` / `write_file` / `list_dir` — workspace file ops.
+- `read_file` / `write_file` / `append_file` / `list_dir` — workspace file ops.
 - `web_search` — privacy-respecting public web search via SearXNG.
 - `sleep` — request graceful shutdown.
 
