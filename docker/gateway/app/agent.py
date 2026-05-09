@@ -21,7 +21,7 @@ from .compaction import (
     will_mid_session_compact,
 )
 from .config import Config
-from .memory import ROOT_SOURCES, MemoryIndex
+from .memory import MemoryIndex
 from .memory_flush import flush_then_reindex
 from .tools import Tool, bedrock_tool_config
 from .transcript import TranscriptStore, Turn, estimate_tokens, session_id
@@ -161,41 +161,51 @@ class Agent:
             parts.append(retrieval_block)
         return [{"text": "\n\n".join(parts)}]
 
-    def _build_flush_system_block(self) -> list[dict[str, Any]]:
-        """Flush-specific system block: rendered system template PLUS a
-        snapshot of top-level memory files (MEMORY.md, USER.md, AGENTS.md,
-        etc.). The flush agent uses these to decide what's already
-        captured vs. what's genuinely new in the conversation excerpt.
+    async def _build_flush_system_block(self) -> list[dict[str, Any]]:
+        """Flush-specific system block: rendered system template + USER.md
+        verbatim + a retrieval block targeting memory-curation guidance.
 
-        Daily notes (memory/YYYY-MM-DD.md) are intentionally excluded —
-        those are exactly what flush is producing, so feeding them back
-        in would be circular and grow unbounded.
+        We deliberately do NOT inline every ROOT_SOURCES file: MEMORY.md
+        can grow large over an agent's lifetime, and dumping it every flush
+        is expensive once an agent has been around for a while. Instead:
+
+        - USER.md inlined: small, identity-grounding, helps the flush
+          agent decide what's relevant to "the user" the conversation is
+          about.
+        - Retrieval hits for "memory flush remember durable knowledge":
+          surfaces any memory-curation patterns the agent has previously
+          captured (in MEMORY.md, daily notes, AGENTS.md, etc.) — bounded
+          by RRF top-N, scales gracefully with index size.
+
+        Daily notes (memory/YYYY-MM-DD.md) reach this block via retrieval
+        if they happen to be relevant; not inlined directly because flush
+        is exactly what's producing them and would otherwise grow unbounded.
         """
         rendered = self.system_template.replace("{AGENT_NAME}", self.cfg.agent_name)
         rendered = rendered.replace("${WORKSPACE_DIR}", self.cfg.workspace_dir)
         parts = [rendered]
 
-        memory_sections: list[str] = []
-        for fname in ROOT_SOURCES:
-            fpath = os.path.join(self.cfg.memory_source_dir, fname)
-            try:
-                with open(fpath) as f:
-                    content = f.read()
-            except (FileNotFoundError, OSError):
-                continue
-            if not content.strip():
-                continue
-            memory_sections.append(f"### memory/{fname}\n{content.rstrip()}")
+        # USER.md inline — small, stable, identity-grounding.
+        user_md_path = os.path.join(self.cfg.memory_source_dir, "USER.md")
+        try:
+            with open(user_md_path) as f:
+                user_md = f.read().strip()
+            if user_md:
+                parts.append(f"## memory/USER.md\n\n{user_md}")
+        except (FileNotFoundError, OSError):
+            pass
 
-        if memory_sections:
-            parts.append(
-                "## Memory files (current state)\n\n"
-                "Snapshot of your top-level memory files. Cross-reference "
-                "against these when deciding what durable knowledge from the "
-                "conversation excerpt is worth appending — skip what's "
-                "already captured here.\n\n"
-                + "\n\n".join(memory_sections)
+        # Targeted retrieval over the agent's own memory files for any
+        # flush/curation guidance the agent has previously written.
+        try:
+            retrieval = await self.memory.retrieve_markdown(
+                "memory flush remember durable knowledge",
+                top_n=8, compact=False,
             )
+            if retrieval.strip():
+                parts.append(retrieval)
+        except Exception:
+            log.exception("flush system block retrieval failed; continuing without")
 
         return [{"text": "\n\n".join(parts)}]
 
@@ -337,7 +347,7 @@ class Agent:
                 primary_model_id=self.cfg.model_id,
                 tools=self.tools,
                 tool_config=self.tool_config,
-                system_block=self._build_flush_system_block(),
+                system_block=await self._build_flush_system_block(),
                 reason=reason,
                 tz_name=None,
             )
