@@ -38,20 +38,19 @@ from .bedrock import BedrockClient
 from .channel import build_channel
 from .health import HealthServer
 from .memory import MemoryIndex
-from .memory_flush import flush_then_reindex
 from .tools import build_registry
 from .transcript import TranscriptStore
 from .wake_greet import wake_greet
 from .webhook import install_wake_listener_webhook
 
 
-async def _maintenance_loop(agent: Agent, memory: MemoryIndex) -> None:
+async def _maintenance_loop(agent: Agent) -> None:
     """Periodic flush_then_reindex for sessions with token-growth past
     threshold. Runs forever until cancelled.
 
     Each tick: for each known session, if growth-since-last-flush exceeds
-    ``periodic_growth_threshold``, fire flush_then_reindex (incremental
-    window). Reindex itself is a no-op when nothing changed on disk.
+    ``periodic_growth_threshold``, fire ``agent.flush_session`` (which
+    handles the per-sid lock and incremental window).
     """
     cfg = agent.cfg
     log_main = logging.getLogger("clawless.maintenance")
@@ -62,26 +61,11 @@ async def _maintenance_loop(agent: Agent, memory: MemoryIndex) -> None:
                 growth = agent.session_growth(sid)
                 if growth < cfg.periodic_growth_threshold:
                     continue
-                turns = agent.transcripts.load(sid)
-                latest_ts = await flush_then_reindex(
-                    bedrock=agent.bedrock,
-                    memory_index=memory,
-                    sid=sid,
-                    turns=turns,
-                    since_ts=agent._last_flush_ts.get(sid),
-                    primary_model_id=cfg.model_id,
-                    tools=agent.tools,
-                    tool_config=agent.tool_config,
-                    system_block=agent._system_for(None, None),
-                    reason="periodic-growth",
-                    tz_name=None,
+                log_main.info(
+                    "[%s] periodic flush+reindex triggered (growth=%d tokens)",
+                    sid, growth,
                 )
-                if latest_ts:
-                    agent.mark_flushed(sid, latest_ts)
-                    log_main.info(
-                        "[%s] periodic flush+reindex (growth=%d tokens)",
-                        sid, growth,
-                    )
+                await agent.flush_session(sid, reason="periodic-growth")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -192,7 +176,7 @@ async def _main() -> int:
     health.mark_ready()
 
     maintenance_task = asyncio.create_task(
-        _maintenance_loop(agent, memory), name="maintenance-loop",
+        _maintenance_loop(agent), name="maintenance-loop",
     )
 
     stop_event = asyncio.Event()

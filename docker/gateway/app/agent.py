@@ -59,6 +59,11 @@ class Agent:
         # Sessions with a background compaction task in flight; prevents
         # spawning a second compactor while one is still running.
         self._bg_compaction_sids: set[str] = set()
+        # Sessions with a flush_then_reindex in flight; a triggered flush
+        # for an sid already in this set is skipped (logged but a no-op),
+        # not queued. asyncio is single-threaded so check-and-add is atomic
+        # as long as no `await` interleaves between them.
+        self._flushing_sids: set[str] = set()
         # Strong refs to background tasks — asyncio holds only weak refs to
         # tasks created via create_task, so unreferenced tasks may be GC'd
         # mid-execution. Discard each task on completion.
@@ -265,36 +270,55 @@ class Agent:
         if final_text.strip():
             await self.channel.send(msg.peer_id, final_text.strip())
 
+    async def flush_session(self, sid: str, reason: str) -> None:
+        """Run flush_then_reindex for one session under the per-session
+        flush lock. Skips silently (logged) if another flush is already
+        in flight for the same sid — flushes are not queued, just
+        deduplicated.
+
+        Caller-supplied ``reason`` becomes the log label
+        ("pre-sleep" / "pre-compact" / "periodic-growth").
+        """
+        # Check-and-add must not be interleaved with await between the two
+        # operations; asyncio is single-threaded so this is atomic.
+        if sid in self._flushing_sids:
+            log.info(
+                "[%s] flush skipped (reason=%s): another flush in flight",
+                sid, reason,
+            )
+            return
+        self._flushing_sids.add(sid)
+        try:
+            turns = self.transcripts.load(sid)
+            latest_ts = await flush_then_reindex(
+                bedrock=self.bedrock,
+                memory_index=self.memory,
+                sid=sid,
+                turns=turns,
+                since_ts=self._last_flush_ts.get(sid),
+                primary_model_id=self.cfg.model_id,
+                tools=self.tools,
+                tool_config=self.tool_config,
+                system_block=self._system_for(None, None),
+                reason=reason,
+                tz_name=None,
+            )
+            if latest_ts:
+                self.mark_flushed(sid, latest_ts)
+        except Exception:
+            log.exception("[%s] flush_then_reindex failed (reason=%s)", sid, reason)
+        finally:
+            self._flushing_sids.discard(sid)
+
     async def flush_all_sessions_before_sleep(self) -> None:
-        """Run flush_then_reindex for every known session before SIGTERM.
+        """Run flush_session for every known session before SIGTERM.
 
         Called by the sleep-tool wrapper so durable knowledge is captured
         regardless of whether the agent chose to write anything itself
-        during the sleep dialogue. Iterates over all known sessions
-        (multi-channel friendly) and uses each session's incremental
-        window. Failures are logged and swallowed so a flush problem
-        doesn't block sleep.
+        during the sleep dialogue.
         """
         for sid in self.known_session_ids():
-            turns = self.transcripts.load(sid)
-            try:
-                latest_ts = await flush_then_reindex(
-                    bedrock=self.bedrock,
-                    memory_index=self.memory,
-                    sid=sid,
-                    turns=turns,
-                    since_ts=self._last_flush_ts.get(sid),
-                    primary_model_id=self.cfg.model_id,
-                    tools=self.tools,
-                    tool_config=self.tool_config,
-                    system_block=self._system_for(None, None),
-                    reason="pre-sleep",
-                    tz_name=None,
-                )
-                if latest_ts:
-                    self.mark_flushed(sid, latest_ts)
-            except Exception:
-                log.exception("[%s] pre-sleep flush failed", sid)
+            await self.flush_session(sid, reason="pre-sleep")
 
     async def _run_bg_compaction(
         self, sid: str, snapshot: list[Turn], peer_id: str,
@@ -309,21 +333,7 @@ class Agent:
         """
         lock = self._session_locks.setdefault(sid, asyncio.Lock())
         try:
-            latest_ts = await flush_then_reindex(
-                bedrock=self.bedrock,
-                memory_index=self.memory,
-                sid=sid,
-                turns=snapshot,
-                since_ts=self._last_flush_ts.get(sid),
-                primary_model_id=self.cfg.model_id,
-                tools=self.tools,
-                tool_config=self.tool_config,
-                system_block=self._system_for(None, None),
-                reason="pre-compact",
-                tz_name=None,
-            )
-            if latest_ts:
-                self.mark_flushed(sid, latest_ts)
+            await self.flush_session(sid, reason="pre-compact")
 
             swapped, post_turns = await run_mid_session_compact_async(
                 cfg=self.cfg,
