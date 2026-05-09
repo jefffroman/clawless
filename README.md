@@ -172,6 +172,7 @@ See [docs/lifecycle.md](docs/lifecycle.md) for details on what runs locally vs. 
 | [docs/lifecycle.md](docs/lifecycle.md) | Step Functions → SSM + DynamoDB → Lambda flow, per-slug ownership, race handling |
 | [docs/credentials.md](docs/credentials.md) | Task roles, channel bot tokens, AWS credential delivery |
 | [docs/backups.md](docs/backups.md) | S3 workspace sync, retention, restore procedures |
+| [docs/memory.md](docs/memory.md) | Hybrid retrieval, SHA-mapped reindex, async compaction, incremental flush |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | ECS status, CloudWatch logs, broken sessions, Lambda debugging |
 
 ---

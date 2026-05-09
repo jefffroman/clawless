@@ -40,6 +40,14 @@ When an agent is removed, the Lambda copies all objects from the agent's backup 
 
 Sleeping scales the ECS service to `desired_count=0`. The container receives SIGTERM, runs `sync_up()`, and exits. S3 data remains intact. On wake (`desired_count=1`), a new task boots and `sync_down()` restores the workspace.
 
+When the agent invokes the `sleep` tool, an automatic pre-sleep flush
+runs first — capturing durable session knowledge into
+`memory/YYYY-MM-DD.md` and refreshing the search index — before the SFN
+fires and `sync_up()` runs. So workspace files in S3 always reflect the
+agent's most recent durable-knowledge capture, even if the user never
+asked the agent to write anything explicitly. See [memory.md](memory.md)
+for the flush architecture.
+
 ## Excluded from sync
 
 | Pattern | Reason |
