@@ -265,6 +265,37 @@ class Agent:
         if final_text.strip():
             await self.channel.send(msg.peer_id, final_text.strip())
 
+    async def flush_all_sessions_before_sleep(self) -> None:
+        """Run flush_then_reindex for every known session before SIGTERM.
+
+        Called by the sleep-tool wrapper so durable knowledge is captured
+        regardless of whether the agent chose to write anything itself
+        during the sleep dialogue. Iterates over all known sessions
+        (multi-channel friendly) and uses each session's incremental
+        window. Failures are logged and swallowed so a flush problem
+        doesn't block sleep.
+        """
+        for sid in self.known_session_ids():
+            turns = self.transcripts.load(sid)
+            try:
+                latest_ts = await flush_then_reindex(
+                    bedrock=self.bedrock,
+                    memory_index=self.memory,
+                    sid=sid,
+                    turns=turns,
+                    since_ts=self._last_flush_ts.get(sid),
+                    primary_model_id=self.cfg.model_id,
+                    tools=self.tools,
+                    tool_config=self.tool_config,
+                    system_block=self._system_for(None, None),
+                    reason="pre-sleep",
+                    tz_name=None,
+                )
+                if latest_ts:
+                    self.mark_flushed(sid, latest_ts)
+            except Exception:
+                log.exception("[%s] pre-sleep flush failed", sid)
+
     async def _run_bg_compaction(
         self, sid: str, snapshot: list[Turn], peer_id: str,
     ) -> None:

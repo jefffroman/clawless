@@ -132,6 +132,24 @@ async def _main() -> int:
         channel=channel,
     )
 
+    # Auto pre-sleep flush: wrap the sleep tool's run so it always runs
+    # flush_then_reindex first, regardless of whether the agent chose to
+    # write durable knowledge itself. The inner _run_sleep still does its
+    # own reindex_if_stale as a safety net (no-op if flush already
+    # reindexed).
+    sleep_tool = tools.get("sleep")
+    if sleep_tool is not None:
+        _inner_sleep_run = sleep_tool.run
+
+        async def _sleep_with_flush(args: dict[str, Any]) -> str:
+            try:
+                await agent.flush_all_sessions_before_sleep()
+            except Exception:
+                log.exception("pre-sleep flush wrapper failed; continuing with sleep")
+            return await _inner_sleep_run(args)
+
+        sleep_tool.run = _sleep_with_flush
+
     health = HealthServer(cfg)
     await health.start()
 

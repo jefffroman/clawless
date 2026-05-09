@@ -53,12 +53,17 @@ def _flush_prompt(today: str) -> str:
     return (
         "Memory flush.\n\n"
         "Look at the recent portion of this conversation and capture any "
-        "durable knowledge worth persisting across sessions. Use the "
-        "`write_file` tool ONCE with "
-        f"`path=\"memory/{today}.md\"` to add bullet-style notes to today's "
-        "memory file. If the file already has content, read it first with "
-        "`read_file` and append your new notes at the end. Bundle all your "
-        "observations into a single `write_file` call.\n\n"
+        "durable knowledge worth persisting across sessions.\n\n"
+        f"PROCEDURE (mandatory order):\n"
+        f"1. Call `read_file` with `path=\"memory/{today}.md\"` first. If it "
+        "returns 'error: not found', treat the existing content as empty.\n"
+        f"2. Call `write_file` with `path=\"memory/{today}.md\"` ONCE. The "
+        "content MUST be the existing content from step 1 verbatim, "
+        "followed by your new bullet-point notes appended at the end. "
+        "Never replace existing content — `write_file` overwrites, so a "
+        "non-append write will destroy prior entries.\n"
+        "3. Reply with one short sentence confirming what you added (or "
+        "'nothing to flush' if you appended nothing).\n\n"
         "Rules:\n"
         "- Treat top-level files (MEMORY.md, SOUL.md, AGENTS.md, IDENTITY.md, "
         "USER.md, etc.) as read-only. Do not touch them.\n"
@@ -67,8 +72,7 @@ def _flush_prompt(today: str) -> str:
         "- Preserve only durable signal: decisions, facts confirmed, "
         "commitments, surprises, repeated patterns. Skip ephemera "
         "(in-progress chatter, search noise, raw tool outputs).\n"
-        "- If nothing meets the bar, do nothing — silence is fine.\n\n"
-        "Reply briefly when done."
+        "- If nothing meets the bar, skip step 2 entirely — silence is fine."
     )
 
 
