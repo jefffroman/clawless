@@ -48,6 +48,29 @@ AGENT_SLUG="$(slugify "$AGENT_NAME")"
 echo "  Agent slug:  ${AGENT_SLUG}"
 echo "  SSM path:    /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 
+# ── Persona (selected by agent name) ──────────────────────────────────────────
+# The persona is resolved from the agent name exactly as tofu's seed.tf does
+# (lower → trim → [^a-z0-9_-] becomes '-'). This is NOT the slug (slugify
+# collapses repeats and trims dashes; persona_key must not). Reject an unknown
+# persona here — before any SSM write or SFN trigger — so the failure is at the
+# UI, not deep inside a lifecycle apply.
+PERSONA_KEY="$(printf '%s' "$AGENT_NAME" | tr '[:upper:]' '[:lower:]' \
+  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[^a-z0-9_-]/-/g')"
+PERSONA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tofu/modules/client/seed/personas"
+if [[ ! -f "${PERSONA_ROOT}/${PERSONA_KEY}/SOUL.md.tftpl" ]]; then
+  echo "Error: no persona '${PERSONA_KEY}' for agent name '${AGENT_NAME}'." >&2
+  echo "       Expected ${PERSONA_ROOT}/${PERSONA_KEY}/SOUL.md.tftpl" >&2
+  if compgen -G "${PERSONA_ROOT}/*/SOUL.md.tftpl" >/dev/null 2>&1; then
+    echo "       Available personas:" >&2
+    for __p in "${PERSONA_ROOT}"/*/SOUL.md.tftpl; do
+      echo "         - $(basename "$(dirname "$__p")")" >&2
+    done
+  fi
+  echo "       Pick an agent name matching a persona, or add the persona first." >&2
+  exit 1
+fi
+echo "  Persona:     ${PERSONA_KEY}"
+
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
 ask CHANNEL "Channel (telegram / discord / slack)" "telegram"

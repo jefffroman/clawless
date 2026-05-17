@@ -1,8 +1,10 @@
 """Built-in tools exposed to Bedrock Converse.
 
-Six tools, no manifest loader, no subprocess plugin model. Memory-curation is
-a system-prompt protocol the agent enacts via ``read_file`` / ``write_file``
-on its own ``memory/`` directory; it is not a tool here.
+Seven tools, no manifest loader, no subprocess plugin model. Memory-curation
+is a system-prompt protocol the agent enacts via ``read_file`` /
+``write_file`` / ``append_file`` on its own ``memory/`` directory. Memory
+*retrieval* is the ``recall`` tool (a thin wrapper over the index); how it
+works internally is not exposed to the agent.
 
 Tool contract: each Tool has a JSON schema (Bedrock toolConfig) and an async
 ``run(input)`` that returns text. ``run`` may raise; callers wrap into a
@@ -307,6 +309,24 @@ async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> 
 
 
 # ---------------------------------------------------------------------------
+# recall (built-in: query long-term memory)
+# ---------------------------------------------------------------------------
+
+
+async def _run_recall(memory: MemoryIndex, args: dict[str, Any]) -> str:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "recall: 'query' is required."
+    try:
+        top_n = int(args.get("top_n", 5))
+    except (TypeError, ValueError):
+        top_n = 5
+    top_n = max(1, min(top_n, 20))
+    out = await memory.retrieve_markdown(query, top_n=top_n, compact=False)
+    return out or "Nothing relevant in memory for that."
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -424,6 +444,22 @@ def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
                 "required": [],
             },
             run=functools.partial(_run_sleep, cfg, memory),
+        ),
+        Tool(
+            name="recall",
+            description=(
+                "Look something up in your long-term memory. Returns the most "
+                "relevant saved notes for the query."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to look up."},
+                    "top_n": {"type": "integer", "description": "Max notes to return (1-20; default 5)."},
+                },
+                "required": ["query"],
+            },
+            run=functools.partial(_run_recall, memory),
         ),
     ]
     return {t.name: t for t in tools}

@@ -17,7 +17,8 @@ which is synced to S3 on SIGTERM and back down on boot.
 ${WORKSPACE_DIR}/
 ├── memory/
 │   ├── MEMORY.md             — main long-term store (curated by the agent)
-│   ├── SOUL.md, IDENTITY.md, USER.md, AGENTS.md, …  — themed memory files
+│   ├── SOUL.md               — persona: identity + character (persona-seeded)
+│   ├── USER.md, …            — themed memory files
 │   ├── 2026-05-09.md         — daily archives (created by the flush turn)
 │   ├── .flush_state.json     — per-session high-water mark for incremental flush
 │   ├── chroma_db/            — (data dir, ephemeral; lives at MEMORY_DATA_DIR)
@@ -34,6 +35,21 @@ ${WORKSPACE_DIR}/
 > `reindex_if_stale`. The state file `sync_state.json` *does* live there
 > (also ephemeral), but the SHA-mapping stays consistent because reindex
 > regenerates it from the workspace markdown on boot.
+
+## Personas
+
+An agent ships as a pre-formed **persona**, selected by its name. `seed.tf`
+normalizes the effective agent name to a `persona_key`
+(`lower`, then `[^a-z0-9_-]` → `-`) and seeds `SOUL.md` from
+`tofu/modules/client/seed/personas/<persona_key>/SOUL.md.tftpl`. A persona may
+also override `MEMORY.md`/`USER.md`; anything it doesn't ship falls back to
+the generic scaffold in `seed/`.
+
+There is **no generic SOUL** — an unknown persona fails `tofu plan` early via a
+resource precondition. Persona resolves at agent creation only (seed objects
+are write-once via `ignore_changes`). Authoring guide and the content rule
+(no infrastructure/mechanism in any client-reachable file):
+`tofu/modules/client/seed/personas/README.md`.
 
 ## Retrieval
 

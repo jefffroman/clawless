@@ -48,9 +48,7 @@ EXCLUDED_SECTION_PATTERNS = re.compile(
 DAILY_NOTE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 ROOT_SOURCES = (
-    "MEMORY.md", "SOUL.md", "AGENTS.md", "HEARTBEAT.md",
-    "PROJECTS.md", "TOOLS.md", "IDENTITY.md", "USER.md",
-    "ARCHITECTURE.md",
+    "MEMORY.md", "SOUL.md", "USER.md",
 )
 
 
