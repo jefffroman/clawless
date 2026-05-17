@@ -1,8 +1,13 @@
 # ── Shared backup bucket ──────────────────────────────────────────────────────
-# Fargate gateway tasks sync their workspace here on SIGTERM and restore on boot
-# (agents/{slug}/workspace/). When a client is removed, the Lambda archives the
-# data under removed/{slug}/{date}/ before destroying the prefix.
-# Lifecycle: 3 rotating versions — current kept indefinitely, 2 noncurrent kept ≥7 days.
+# Each Fargate gateway task persists its workspace as ONE versioned object,
+# agents/{slug}/workspace.tar.zst — snapshotted (tar+zstd) on SIGTERM and
+# extracted on boot. History is S3 object versions of that single key; there
+# are no dated keys. That bounded key set is what lets the lifecycle below
+# actually expire old state (unbounded distinct keys were the root cause it
+# could not bound before). On removal the Lambda copies the object to
+# removed/{slug}/workspace.tar.zst (also one versioned key, no date) before
+# destroying it.
+# Lifecycle (unchanged): current kept indefinitely, 2 noncurrent kept ≥7 days.
 
 resource "aws_s3_bucket" "backups" {
   bucket = "clawless-backups-${data.aws_caller_identity.root.account_id}"

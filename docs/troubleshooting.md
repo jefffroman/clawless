@@ -39,31 +39,42 @@ aws ssm put-parameter \
 
 ## Broken transcripts
 
-If the gateway crashes mid-turn or you see Bedrock errors about message ordering ("toolUse without matching toolResult", etc.), archive the agent's transcripts so the next boot starts fresh:
+If the gateway crashes mid-turn or you see Bedrock errors about message ordering ("toolUse without matching toolResult", etc.), strip the agent's transcripts so the next boot starts fresh. The workspace is a single archive object now, so this is a download → extract → edit → repack → upload cycle. Do it while the agent is asleep (scale to 0 first) so the running task can't snapshot over your edit:
 
 ```bash
-aws s3 mv s3://clawless-backups-<account>/agents/<client>/<agent>/workspace/transcripts/ \
-  s3://clawless-backups-<account>/agents/<client>/<agent>/workspace/transcripts.bak-$(date +%s)/ \
-  --recursive --region us-east-1
+ACCT=<account>; SLUG=<client>/<agent>; SVC=clawless-<client>-<agent>
+KEY="agents/${SLUG}/workspace.tar.zst"
+
+aws ecs update-service --cluster clawless --service "$SVC" \
+  --desired-count 0 --region us-east-1 >/dev/null
+aws ecs wait services-stable --cluster clawless --services "$SVC" --region us-east-1
+
+WORK=$(mktemp -d)
+aws s3 cp "s3://clawless-backups-${ACCT}/${KEY}" - --region us-east-1 \
+  | zstd -dc | tar -C "$WORK" -xf -
+rm -rf "$WORK"/transcripts/*          # memory/ is left untouched
+tar -C "$WORK" --exclude='./.cache' --exclude='./.aws' -cf - . \
+  | zstd -1 -T0 | aws s3 cp - "s3://clawless-backups-${ACCT}/${KEY}" --region us-east-1
+rm -rf "$WORK"
 ```
 
-Then force a new deployment so the gateway syncs the cleaned workspace:
+Then wake the agent (or scale back to 1) — the new task extracts the cleaned archive on boot:
 
 ```bash
-aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
-  --force-new-deployment --region us-east-1
+./scripts/wake-agent.sh <client> <agent>
 ```
 
-The agent's `memory/` files are untouched — only the per-peer session JSONLs are archived.
+Only the per-peer session JSONLs under `transcripts/` are removed; the agent's `memory/` files ride along untouched. If you'd rather roll the whole workspace back to a known-good point instead of surgically editing, use `./scripts/restore-agent.sh --slug <client>/<agent> --list` to pick a prior archive version.
 
 ## Memory / flush / compaction
 
 See [memory.md](memory.md) for the full architecture. Common operational
 checks:
 
-**Confirm a session's flush state:**
+**Confirm a session's flush state** (the file rides inside the workspace archive; extract just that member to stdout):
 ```bash
-aws s3 cp s3://clawless-backups-<account>/agents/<client>/<agent>/workspace/memory/.flush_state.json - --region us-east-1
+aws s3 cp s3://clawless-backups-<account>/agents/<client>/<agent>/workspace.tar.zst - --region us-east-1 \
+  | zstd -dc | tar -xO ./memory/.flush_state.json
 ```
 Each entry is `"<sid>": "<iso-ts>"` — the high-water mark of the most
 recent successful flush. Missing entries mean the session has never been

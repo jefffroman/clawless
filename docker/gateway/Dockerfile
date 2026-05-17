@@ -7,18 +7,20 @@
 #   /opt/clawless/venv      one venv with all gateway deps
 #   /opt/clawless/app       application code (mirrors docker/gateway/app/)
 #   /var/lib/clawless-memory  ephemeral chromadb + bm25 + graph
-#   /home/clawless          workspace synced to/from S3 by entrypoint.sh
+#   /home/clawless          workspace archived (tar+zstd) to/from S3 by entrypoint.sh
 
 FROM python:3.12-slim
 
-# Runtime deps only. AWS CLI v1 from apt is enough for `aws s3 sync` (we don't
-# need v2 features, and apt-installed v1 is ~25 MB compressed vs ~70 MB for v2).
-# tini is PID 1; gosu drops to the unprivileged clawless user before exec'ing
-# the python process. sudo lets the gateway hand bash subshells off to a
-# lower-privileged user (see clawless-tool below).
+# Runtime deps only. AWS CLI v1 from apt is enough for the S3 archive
+# get/put (we don't need v2 features, and apt-installed v1 is ~25 MB
+# compressed vs ~70 MB for v2). tini is PID 1; gosu drops to the
+# unprivileged clawless user before exec'ing the python process. sudo lets
+# the gateway hand bash subshells off to a lower-privileged user (see
+# clawless-tool below). zstd compresses the single workspace archive
+# (tar+zstd-1) on SIGTERM; it is not in python:3.12-slim by default.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         ca-certificates curl tini gosu awscli sudo \
+         ca-certificates curl tini gosu awscli sudo zstd \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
     && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +

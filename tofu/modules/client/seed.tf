@@ -3,8 +3,12 @@
 # at apply time with agent/client identity and uploaded to the backup bucket
 # at s3://BACKUP_BUCKET/agents/{slug}/workspace/memory/...
 #
-# This is the path clawless-gateway's memory module reads on every retrieval
-# (see app/config.py: memory_source_dir = ${WORKSPACE_DIR}/memory).
+# These individual objects are consumed exactly once: on the agent's very
+# first boot, before any workspace.tar.zst archive exists, the entrypoint's
+# restore fallback per-file-syncs this prefix into ${WORKSPACE_DIR}/memory
+# (the path the memory module reads, app/config.py: memory_source_dir). From
+# the first SIGTERM onward the agent's state lives in the single versioned
+# workspace.tar.zst archive and this seed prefix is no longer read.
 #
 # Persona model: the normalized agent name selects a persona directory under
 # seed/personas/<persona_key>/. SOUL.md is persona-defined and mandatory —
@@ -18,7 +22,10 @@
 # resource is effectively create-only, so persona only applies at creation.
 #
 # Removing an agent destroys the seed objects. The lifecycle Lambda archives
-# the workspace prefix before tofu destroy runs, so nothing is lost.
+# the single workspace.tar.zst object before tofu destroy runs, so an agent
+# that has slept at least once loses nothing. An agent removed before it ever
+# slept has no archive — only this deterministically reproducible seed
+# scaffold, which tofu destroy removes; nothing of value is lost.
 
 locals {
   seed_vars = {

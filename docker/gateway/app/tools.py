@@ -79,6 +79,32 @@ def _resolve_scoped(workspace_dir: str, rel_path: str) -> str:
     return candidate
 
 
+def _workspace_bytes(workspace_dir: str, memory_data_dir: str) -> int:
+    """Sum on-disk file sizes under ``workspace_dir``, skipping
+    ``memory_data_dir``.
+
+    MEMORY_DATA_DIR (the ephemeral chroma/bm25/graph tree) is normally
+    outside the workspace and is never archived, so it must not count
+    against the budget; we prune it defensively in case of an overlapping
+    config. Workspaces are small (markdown + jsonl), so a full walk is
+    sub-millisecond and exact — simpler and sounder than incremental
+    accounting (these two functions are not the only writers; the agent
+    also lands files via tools that go through here).
+    """
+    total = 0
+    mem_real = os.path.realpath(memory_data_dir)
+    for root, dirs, files in os.walk(workspace_dir):
+        if os.path.realpath(root) == mem_real:
+            dirs[:] = []
+            continue
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
 # ---------------------------------------------------------------------------
 # bash
 # ---------------------------------------------------------------------------
@@ -170,6 +196,20 @@ async def _run_write_file(cfg: Config, args: dict[str, Any]) -> str:
         path = _resolve_scoped(cfg.workspace_dir, rel)
     except PathScopeError as e:
         return f"error: {e}"
+    budget = cfg.workspace_byte_budget
+    new_bytes = len(content.encode("utf-8"))
+    if new_bytes > budget:
+        return (f"error: write of {new_bytes} bytes exceeds the workspace "
+                f"budget of {budget} bytes")
+    # write_file replaces the target, so its current size is freed.
+    existing = os.path.getsize(path) if os.path.isfile(path) else 0
+    projected = (
+        _workspace_bytes(cfg.workspace_dir, cfg.memory_data_dir)
+        - existing + new_bytes
+    )
+    if projected > budget:
+        return (f"error: write would exceed the workspace budget "
+                f"({projected} > {budget} bytes); delete unused files first")
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -189,6 +229,18 @@ async def _run_append_file(cfg: Config, args: dict[str, Any]) -> str:
         path = _resolve_scoped(cfg.workspace_dir, rel)
     except PathScopeError as e:
         return f"error: {e}"
+    budget = cfg.workspace_byte_budget
+    new_bytes = len(content.encode("utf-8"))
+    if new_bytes > budget:
+        return (f"error: append of {new_bytes} bytes exceeds the workspace "
+                f"budget of {budget} bytes")
+    # append_file keeps the existing file; we only add new_bytes.
+    projected = (
+        _workspace_bytes(cfg.workspace_dir, cfg.memory_data_dir) + new_bytes
+    )
+    if projected > budget:
+        return (f"error: append would exceed the workspace budget "
+                f"({projected} > {budget} bytes); delete unused files first")
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)

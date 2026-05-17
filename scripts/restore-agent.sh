@@ -1,32 +1,47 @@
 #!/usr/bin/env bash
 # restore-agent.sh — Roll an agent's workspace back to a prior point in time.
 #
-# Uses S3 object versioning on the shared backup bucket to restore
-# agents/{slug}/workspace/* to how it looked before a given timestamp, then
-# forces a new Fargate deployment so the running task picks up the rolled-back
-# state on its next sync_down.
+# Single-archive model: an agent's whole workspace is one versioned S3 object
+# (agents/{slug}/workspace.tar.zst). Point-in-time recovery = pick a prior
+# S3 *version* of that one key and copy it onto the current version, then
+# force a new Fargate deployment so the running task extracts the rolled-back
+# archive on its next boot.
 #
-# Usage: restore-agent.sh --slug <client/agent> --before <datetime> [--region <region>]
-# Example: restore-agent.sh --slug zalman/wingmate --before 2026-04-10T12:00:00Z
+# Usage:
+#   restore-agent.sh --slug <client/agent> --list [--region <region>]
+#   restore-agent.sh --slug <client/agent> --before <datetime> [--region <region>]
+#
+#   --list    Print the version history of the workspace archive and exit
+#             (no service changes). Use it to pick a --before cutoff.
+#   --before  Restore the newest version older than this ISO-8601 instant,
+#             e.g. 2026-04-10T12:00:00Z (must match the LastModified format
+#             shown by --list).
 set -euo pipefail
 
 REGION="us-east-1"
 SLUG=""
 BEFORE=""
+LIST=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug)   SLUG="$2"; shift 2 ;;
     --before) BEFORE="$2"; shift 2 ;;
     --region) REGION="$2"; shift 2 ;;
+    --list)   LIST=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
-if [[ -z "$SLUG" || -z "$BEFORE" ]]; then
-  echo "Usage: restore-agent.sh --slug <client/agent> --before <datetime> [--region <region>]" >&2
+usage() {
+  echo "Usage:" >&2
+  echo "  restore-agent.sh --slug <client/agent> --list [--region <region>]" >&2
+  echo "  restore-agent.sh --slug <client/agent> --before <datetime> [--region <region>]" >&2
   exit 1
-fi
+}
+
+if [[ -z "$SLUG" ]]; then usage; fi
+if [[ "$LIST" -eq 0 && -z "$BEFORE" ]]; then usage; fi
 
 CLIENT_SLUG="${SLUG%%/*}"
 AGENT_SLUG="${SLUG##*/}"
@@ -34,25 +49,56 @@ RESOURCE_SLUG="${CLIENT_SLUG}-${AGENT_SLUG}"
 SERVICE_NAME="clawless-${RESOURCE_SLUG}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BACKUP_BUCKET="clawless-backups-${ACCOUNT_ID}"
-PREFIX="agents/${SLUG}/workspace/"
+OBJ_KEY="agents/${SLUG}/workspace.tar.zst"
 
 hr() { echo "────────────────────────────────────────────────────────"; }
 
+# ── --list: print version history of the single archive object ───────────────
+if [[ "$LIST" -eq 1 ]]; then
+  hr
+  echo "Version history of s3://${BACKUP_BUCKET}/${OBJ_KEY}"
+  hr
+  aws s3api list-object-versions \
+    --bucket "$BACKUP_BUCKET" \
+    --prefix "$OBJ_KEY" \
+    --region "$REGION" \
+    --output json \
+  | python3 - "$OBJ_KEY" <<'PY'
+import json, sys
+key = sys.argv[1]
+data = json.load(sys.stdin)
+vs = [v for v in data.get("Versions", []) if v["Key"] == key]
+vs.sort(key=lambda v: v["LastModified"], reverse=True)
+if not vs:
+    print("(no versions found)")
+else:
+    print(f"{'LastModified':<26} {'Size':>12}  {'Latest':<6} VersionId")
+    for v in vs:
+        print(f"{v['LastModified']:<26} {v['Size']:>12}  "
+              f"{'yes' if v.get('IsLatest') else 'no':<6} {v['VersionId']}")
+PY
+  hr
+  echo "Restore one with:"
+  echo "  ./scripts/restore-agent.sh --slug ${SLUG} --before <LastModified>"
+  hr
+  exit 0
+fi
+
 hr
 echo "Restoring ${SLUG} to state before ${BEFORE}"
-echo "  Bucket : s3://${BACKUP_BUCKET}/${PREFIX}"
+echo "  Object : s3://${BACKUP_BUCKET}/${OBJ_KEY}"
 echo "  Region : ${REGION}"
 hr
 
 # ── Scale the service to 0 so the running task doesn't race the restore ──────
-# Reading files from S3 while the task is writing new ones is incoherent;
-# we stop the task, restore, then scale back.
+# Reading the archive while the task is mid-snapshot is incoherent; we stop
+# the task, restore, then scale back.
 WAS_RUNNING=$(aws ecs describe-services \
   --cluster clawless --services "$SERVICE_NAME" --region "$REGION" \
   --query 'services[0].desiredCount' --output text 2>/dev/null || echo 0)
 
 if [[ "$WAS_RUNNING" == "1" ]]; then
-  echo "Scaling ${SERVICE_NAME} to 0 (task will sync-up on SIGTERM)..."
+  echo "Scaling ${SERVICE_NAME} to 0 (task will snapshot on SIGTERM)..."
   aws ecs update-service \
     --cluster clawless --service "$SERVICE_NAME" \
     --desired-count 0 --region "$REGION" >/dev/null
@@ -61,52 +107,37 @@ if [[ "$WAS_RUNNING" == "1" ]]; then
     --cluster clawless --services "$SERVICE_NAME" --region "$REGION"
 fi
 
-# ── Restore each object to its most recent version before $BEFORE ────────────
+# ── Select the newest archive version older than the cutoff ──────────────────
 hr
-echo "Listing object versions before ${BEFORE}..."
-TMP_VERSIONS="$(mktemp)"
-trap 'rm -f "$TMP_VERSIONS"' EXIT
-
-aws s3api list-object-versions \
+echo "Selecting newest version of workspace.tar.zst before ${BEFORE}..."
+RESTORE_VID="$(aws s3api list-object-versions \
   --bucket "$BACKUP_BUCKET" \
-  --prefix "$PREFIX" \
+  --prefix "$OBJ_KEY" \
   --region "$REGION" \
-  --output json > "$TMP_VERSIONS"
-
-# For each key, pick the newest version older than the cutoff. Python keeps
-# this readable and handles the group-by without jq gymnastics.
-RESTORE_PLAN="$(python3 - "$TMP_VERSIONS" "$BEFORE" <<'PY'
+  --output json \
+| python3 - "$OBJ_KEY" "$BEFORE" <<'PY'
 import json, sys
-versions_path, cutoff = sys.argv[1], sys.argv[2]
-data = json.load(open(versions_path))
-by_key = {}
-for v in data.get("Versions", []):
-    if v["LastModified"] >= cutoff:
-        continue
-    cur = by_key.get(v["Key"])
-    if cur is None or v["LastModified"] > cur["LastModified"]:
-        by_key[v["Key"]] = v
-for key, v in sorted(by_key.items()):
-    print(f"{v['VersionId']}\t{key}")
+key, cutoff = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+cands = [v for v in data.get("Versions", [])
+         if v["Key"] == key and v["LastModified"] < cutoff]
+cands.sort(key=lambda v: v["LastModified"], reverse=True)
+print(cands[0]["VersionId"] if cands else "")
 PY
 )"
 
-if [[ -z "$RESTORE_PLAN" ]]; then
-  echo "No object versions found before ${BEFORE}." >&2
+if [[ -z "$RESTORE_VID" ]]; then
+  echo "No version of ${OBJ_KEY} found before ${BEFORE}." >&2
+  echo "List available versions with: ./scripts/restore-agent.sh --slug ${SLUG} --list" >&2
   exit 1
 fi
 
-COUNT=$(echo "$RESTORE_PLAN" | wc -l | tr -d ' ')
-echo "Will restore ${COUNT} object(s)."
-
-# Copy each prior version onto the current key (creates a new current version).
-while IFS=$'\t' read -r VID KEY; do
-  aws s3api copy-object \
-    --bucket "$BACKUP_BUCKET" \
-    --key "$KEY" \
-    --copy-source "${BACKUP_BUCKET}/${KEY}?versionId=${VID}" \
-    --region "$REGION" >/dev/null
-done <<< "$RESTORE_PLAN"
+echo "Restoring version ${RESTORE_VID} onto the current object."
+aws s3api copy-object \
+  --bucket "$BACKUP_BUCKET" \
+  --key "$OBJ_KEY" \
+  --copy-source "${BACKUP_BUCKET}/${OBJ_KEY}?versionId=${RESTORE_VID}" \
+  --region "$REGION" >/dev/null
 
 echo "Restore complete."
 
@@ -117,7 +148,7 @@ if [[ "$WAS_RUNNING" == "1" ]]; then
   aws ecs update-service \
     --cluster clawless --service "$SERVICE_NAME" \
     --desired-count 1 --force-new-deployment --region "$REGION" >/dev/null
-  echo "Service restarted. New task will sync the restored workspace on boot."
+  echo "Service restarted. New task will extract the restored archive on boot."
 fi
 
 hr

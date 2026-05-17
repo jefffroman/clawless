@@ -40,6 +40,13 @@ MAINTENANCE_INTERVAL_S = 1800
 # for a session if its tokens-since-last-flush exceeds this.
 PERIODIC_GROWTH_THRESHOLD = 8_000
 
+# Per-agent workspace byte budget. write_file/append_file reject a write that
+# would push the on-disk WORKSPACE_DIR tree (excluding MEMORY_DATA_DIR, a
+# separate ephemeral tree) past this. Guards against a runaway agent silently
+# filling disk until the single-archive snapshot on SIGTERM fails (whole-
+# snapshot loss — there is no per-file partial-success cushion anymore).
+WORKSPACE_BYTE_BUDGET = 256 * 1024 * 1024  # 256 MiB
+
 # Idle threshold for wake-time recap: anything older than this gets summarized
 # into a "Last Session Recap" block prepended to the new session's prompt.
 IDLE_RECAP_SECONDS = 3600
@@ -97,6 +104,7 @@ class Config:
     hard_ceiling_tokens: int = HARD_CEILING_TOKENS
     maintenance_interval_s: int = MAINTENANCE_INTERVAL_S
     periodic_growth_threshold: int = PERIODIC_GROWTH_THRESHOLD
+    workspace_byte_budget: int = WORKSPACE_BYTE_BUDGET
 
     @property
     def memory_source_dir(self) -> str:
@@ -177,5 +185,8 @@ def load() -> Config:
         ),
         periodic_growth_threshold=_int(
             "CLAWLESS_PERIODIC_GROWTH_THRESHOLD", PERIODIC_GROWTH_THRESHOLD,
+        ),
+        workspace_byte_budget=_int(
+            "CLAWLESS_WORKSPACE_BYTE_BUDGET", WORKSPACE_BYTE_BUDGET,
         ),
     )

@@ -25,7 +25,6 @@ Failure handling:
   - Mass failure (>1 slug or systemic): stop, alert, let operator investigate.
 """
 
-import datetime
 import json
 import os
 import re
@@ -679,29 +678,38 @@ def _send_alert(subject, message):
 # ── Helper functions ─────────────────────────────────────────────────────────
 
 def _archive_agent_prefix(slug):
-    """Archive a removed agent's workspace in-place in the shared backup bucket.
+    """Archive a removed agent's workspace before tofu destroy.
 
-    Copies agents/{slug}/* → removed/{slug}/{date}/* inside BACKUP_BUCKET, then
-    deletes the original prefix so tofu destroy doesn't trip over it. Idempotent:
-    if the source prefix is empty we skip silently.
+    Single-archive model: the agent's whole workspace is one versioned object
+    (agents/{slug}/workspace.tar.zst). On removal we copy it to
+    removed/{slug}/workspace.tar.zst (overwrite ⇒ a new S3 version — NO date
+    component; history is S3 versions only, per #5's hard invariant) and
+    delete the source so tofu destroy doesn't trip over a non-tofu object.
+
+    Idempotent: if the archive doesn't exist (agent removed before it ever
+    slept — only the tofu-managed seed scaffold exists, which tofu destroy
+    removes and which is deterministically reproducible) we skip silently.
+    Safe to re-run: a second invocation finds no source and no-ops. Never
+    raises on the empty case.
     """
-    src_prefix = f"agents/{slug}/"
-    dst_prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
-    print(f"[remove:{slug}] archiving {src_prefix} → {dst_prefix} in {BACKUP_BUCKET}")
+    src_key = f"agents/{slug}/workspace.tar.zst"
+    dst_key = f"removed/{slug}/workspace.tar.zst"
+    print(f"[remove:{slug}] archiving {src_key} → {dst_key} in {BACKUP_BUCKET}")
 
-    paginator = s3.get_paginator("list_objects_v2")
-    count = 0
-    for page in paginator.paginate(Bucket=BACKUP_BUCKET, Prefix=src_prefix):
-        for obj in page.get("Contents", []):
-            rel = obj["Key"][len(src_prefix):]
-            s3.copy_object(
-                CopySource={"Bucket": BACKUP_BUCKET, "Key": obj["Key"]},
-                Bucket=BACKUP_BUCKET,
-                Key=dst_prefix + rel,
-            )
-            s3.delete_object(Bucket=BACKUP_BUCKET, Key=obj["Key"])
-            count += 1
-    print(f"[remove:{slug}] archived {count} object(s)")
+    try:
+        s3.copy_object(
+            CopySource={"Bucket": BACKUP_BUCKET, "Key": src_key},
+            Bucket=BACKUP_BUCKET,
+            Key=dst_key,
+        )
+        s3.delete_object(Bucket=BACKUP_BUCKET, Key=src_key)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404", "NotFound"):
+            print(f"[remove:{slug}] no archive object (never slept); skipping")
+            return
+        raise
+    print(f"[remove:{slug}] archived 1 object")
 
 
 def _parse_state_slugs(output):
