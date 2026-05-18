@@ -15,26 +15,32 @@ which is synced to S3 on SIGTERM and back down on boot.
 
 ```
 ${WORKSPACE_DIR}/
-├── memory/
+├── memory/                   — AUTHORITATIVE source markdown
 │   ├── MEMORY.md             — main long-term store (curated by the agent)
 │   ├── SOUL.md               — persona: identity + character (persona-seeded)
 │   ├── USER.md, …            — themed memory files
 │   ├── 2026-05-09.md         — daily archives (created by the flush turn)
-│   ├── .flush_state.json     — per-session high-water mark for incremental flush
-│   ├── chroma_db/            — (data dir, ephemeral; lives at MEMORY_DATA_DIR)
+│   └── .flush_state.json     — per-session high-water mark for incremental flush
+├── .index/                   — persisted index cache (= MEMORY_DATA_DIR)
+│   ├── vstore.npz            — int8 vector store (ids + q + scale)
 │   ├── bm25_corpus.json
 │   ├── memory_graph.json
-│   └── sync_state.json
+│   └── sync_state.json       — per-file SHA map + the reindex commit token
 └── transcripts/
     └── telegram_<peer>.jsonl  — per-session transcript
 ```
 
-> **Note**: `MEMORY_DATA_DIR` (default `/var/lib/clawless-memory`) holds
-> the chromadb collection plus the BM25/graph/sync sidecars. It's outside
-> the workspace and ephemeral per container — rebuilt on every boot via
-> `reindex_if_stale`. The state file `sync_state.json` *does* live there
-> (also ephemeral), but the SHA-mapping stays consistent because reindex
-> regenerates it from the workspace markdown on boot.
+> **Source-of-truth contract.** The markdown under `memory/` is
+> **authoritative**. `.index/` (`MEMORY_DATA_DIR`, default
+> `$WORKSPACE_DIR/.index`) is a *persisted cache* that rides **inside** the
+> single workspace archive across sleep/wake — it is **not** rebuilt on every
+> boot. A normal wake trusts the restored index and does zero index work;
+> only a true first boot (no `.index`) builds synchronously. The index is
+> reconciled to the markdown by per-file SHA whenever a reindex runs (see
+> Reindex below); `sync_state.json` is written **last** as the commit token,
+> so a crash mid-write is self-corrected by the next reindex's SHA compare.
+> Only chromadb's bundled ONNX embedder is used — vectors are persisted
+> ourselves as a compact int8 matrix (chromadb's PersistentClient is unused).
 
 ## Personas
 
@@ -57,7 +63,8 @@ Before every Bedrock turn, `MemoryIndex.retrieve_markdown(query)` runs a
 hybrid query:
 
 1. **BM25** lexical scoring against `bm25_corpus.json`
-2. **Vector** ANN over the chromadb collection (MiniLM-L6-v2 via ONNX)
+2. **Vector** brute-force squared-L2 top-k over the persisted int8 store
+   (`vstore.npz`); embeddings via the bundled ONNX MiniLM-L6-v2
 3. **Reciprocal Rank Fusion** to merge the two ranked lists
 4. **Knowledge graph** lookup via `memory_graph.json` (cross-section
    "mentions" edges built at index time)
@@ -71,22 +78,32 @@ in its context.
 
 Source files are tracked by **per-file SHA1** (stored as a dict in
 `sync_state.json`). When the index needs refreshing, `needs_reindex`
-returns `(changed, removed)` source-key lists; `do_reindex` deletes only
-changed/removed sources from the chromadb collection and upserts only the
-changed ones. Chunk IDs are enumerated **per-source** (`{source}:{i}`)
-so adding a section to one file never invalidates other files' IDs.
+returns `(changed, removed)` source-key lists; `do_reindex` re-embeds only
+the changed sources and **reuses prior int8 rows by chunk-id** for
+everything unchanged (removed sources' chunks are simply absent from the
+rebuilt store). Chunk IDs are enumerated **per-source** (`{source}:{i}`)
+so adding a section to one file never invalidates other files' IDs, and
+the int8 store + `bm25_corpus.json` are rebuilt from the same chunk list
+in one locked pass so they can never disagree on the id set. Write order
+is `vstore.npz` → `bm25_corpus.json` → `memory_graph.json` →
+`sync_state.json` (the commit token, last).
 
-Reindex runs in three places:
+Because the index is persisted in the archive, reindex is **consolidated
+at sleep**, not run on every wake:
 
 | Trigger | Where | Notes |
 |---|---|---|
-| Boot | `main._main` | Eager full check after warmup; idempotent |
-| Sleep tool | `tools._run_sleep` | Before SFN trigger, after the pre-sleep flush has appended new content |
-| After flush | `memory_flush.flush_then_reindex` | Picks up newly-flushed daily-note content |
+| First boot only | `main._main` | Synchronous full build *iff* no persisted `.index` (true first boot). Every other wake skips reindex and trusts the restored index. |
+| Shutdown (SIGTERM) | `main._main` shutdown handler | The one chokepoint **all** sleeps funnel through (self-sleep via the `sleep` tool *and* operator/idle pause both arrive as SIGTERM). Best-effort, incremental, after the channel is down. |
+| After flush | `memory_flush.flush_then_reindex` | Picks up newly-flushed daily-note content during a live session |
 
-A periodic standalone reindex loop is **not** needed — every flush
-triggers a reindex, and flush itself is the only way new searchable
-content lands on disk.
+The only gap is a **Python self-crash** (not a graceful SIGTERM) that
+coincides with a direct agent edit to `memory/*.md` since the last
+reindex: the shell still snapshots, so the restored index lags the
+markdown. This is non-catastrophic — markdown is authoritative, the agent
+can `read_file` it — and self-heals at the next flush / periodic
+maintenance reindex; meanwhile `_sync_status` surfaces an `OUT_OF_SYNC`
+banner in the retrieved memory block.
 
 ## Compaction (mid-session, async)
 

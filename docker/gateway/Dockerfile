@@ -1,13 +1,16 @@
 # clawless-gateway — single-process Python aiohttp gateway. boto3 (Bedrock) +
-# aiogram (telegram) + chromadb (memory). Targets ~340 MB compressed.
+# aiogram (telegram) + onnxruntime/tokenizers (memory embedder).
 #
 # python:3.12-slim is debian-bookworm-based, which means manylinux_2_17 wheels
-# work for chromadb on ARM64 — no build-essential needed. The image holds:
+# work for onnxruntime/tokenizers on ARM64 — no build-essential needed. The
+# image holds:
 #
 #   /opt/clawless/venv      one venv with all gateway deps
 #   /opt/clawless/app       application code (mirrors docker/gateway/app/)
-#   /var/lib/clawless-memory  ephemeral chromadb + bm25 + graph
-#   /home/clawless          workspace archived (tar+zstd) to/from S3 by entrypoint.sh
+#   /home/clawless          workspace archived (tar+zstd) to/from S3 by
+#                           entrypoint.sh; the memory index persists inside it
+#                           at /home/clawless/.index (int8 vectors + bm25 +
+#                           graph + sync_state — NOT ephemeral, rides the archive)
 
 FROM python:3.12-slim
 
@@ -40,33 +43,41 @@ RUN useradd --create-home --home-dir /home/clawless --uid 1000 --shell /bin/bash
 RUN echo 'clawless ALL=(clawless-tool) NOPASSWD: /usr/bin/bash' > /etc/sudoers.d/clawless-tool \
     && chmod 0440 /etc/sudoers.d/clawless-tool
 
-# Single venv. chromadb pulls in onnxruntime + numpy + tokenizers; rank-bm25
-# is pure-python; networkx is pure-python; aiogram pulls aiohttp transitively.
-# All wheels are prebuilt for ARM64 manylinux_2_17 — no build-essential.
+# Single venv. chromadb is GONE — the memory index uses our own int8 store
+# (numpy) + a vendored MiniLM ONNX embedder (app/embedder.py: onnxruntime +
+# tokenizers, the same model artifact chromadb shipped). Dropping chromadb
+# removes ~167 MB / 47 transitive packages (grpc, kubernetes, pydantic,
+# uvicorn, opentelemetry, …). rank-bm25 / networkx are pure-python; aiogram
+# pulls aiohttp transitively. All wheels are prebuilt for ARM64
+# manylinux_2_17 — no build-essential.
 RUN python -m venv /opt/clawless/venv \
     && /opt/clawless/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/clawless/venv/bin/pip install --no-cache-dir \
          aiogram \
          boto3 \
-         chromadb \
          networkx \
+         numpy \
+         onnxruntime \
          rank-bm25 \
+         tokenizers \
     && find /opt/clawless/venv -type d -name '__pycache__' -exec rm -rf {} + \
     && find /opt/clawless/venv -type f -name '*.pyc' -delete \
     && find /opt/clawless/venv -type d \( -name 'tests' -o -name 'test' \) -prune -exec rm -rf {} +
-
-# Pre-cache the all-MiniLM-L6-v2 ONNX model so cold starts don't pay the
-# ~80 MB download. The warmup is the same call the gateway makes on boot.
-RUN mkdir -p /var/lib/clawless-memory \
-    && chown clawless:clawless /var/lib/clawless-memory \
-    && chmod 0700 /var/lib/clawless-memory \
-    && su clawless -c '/opt/clawless/venv/bin/python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; DefaultEmbeddingFunction()([\"warm\"])"'
 
 # Application code: root-owned, readable+executable by the clawless group, NOT
 # readable by clawless-tool. Mode 0750 means the agent's bash subshell cannot
 # inspect /opt/clawless/app/system_prompt.md or modify any *.py.
 COPY --chown=root:clawless docker/gateway/app/ /opt/clawless/app/
 RUN chmod -R 0750 /opt/clawless/app
+
+# Pre-cache the all-MiniLM-L6-v2 ONNX model so cold starts don't pay the
+# ~80 MB download. Same call the gateway makes on boot, via the vendored
+# embedder (hence after the app COPY). The model is baked at
+# /opt/clawless/models — OUTSIDE $WORKSPACE_DIR, so the workspace restore
+# (which clears WORKSPACE_DIR children) can never wipe it.
+RUN mkdir -p /opt/clawless/models \
+    && chown clawless:clawless /opt/clawless/models \
+    && su clawless -c 'PYTHONPATH=/opt/clawless CLAWLESS_MODEL_DIR=/opt/clawless/models/all-MiniLM-L6-v2 /opt/clawless/venv/bin/python -c "from app.embedder import MiniLMEmbedder; MiniLMEmbedder()([\"warm\"])"'
 
 # Slim entrypoint: S3 sync-down on boot, exec gateway, SIGTERM trap that
 # webhook-flips and sync-ups.
@@ -78,7 +89,8 @@ ENV HOME=/home/clawless \
     PYTHONPATH=/opt/clawless \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    AWS_SDK_LOAD_CONFIG=1
+    AWS_SDK_LOAD_CONFIG=1 \
+    CLAWLESS_MODEL_DIR=/opt/clawless/models/all-MiniLM-L6-v2
 
 WORKDIR /home/clawless
 

@@ -18,7 +18,8 @@
 #      Extraction is staged then swapped so a crash mid-restore can never
 #      leave a half-populated workspace that later gets snapshotted.
 #   2. exec the python gateway as the clawless user. The gateway owns:
-#        - chromadb warmup + initial reindex
+#        - embedder warmup; reindex only on a true first boot (the index is
+#          persisted in the archive and reconciled at shutdown, not on wake)
 #        - eager idle-recap of stale sessions
 #        - wake_messages DDB drain (claim-deliver-delete)
 #        - telegram long-polling
@@ -56,6 +57,9 @@ SEED_URI="s3://${BACKUP_BUCKET}/agents/${AGENT_SLUG}/workspace/"
 # tar-native excludes (paths are relative to WORKSPACE_DIR, archived as ./…).
 # Excluding the directory prunes the whole subtree, equivalent to the old
 # `.cache/*` sync exclude for capture purposes; the gateway recreates these.
+# NOTE: the memory index lives at $WORKSPACE_DIR/.index and is *deliberately
+# NOT* excluded — it is the persisted int8 vector store + bm25/graph/sync
+# sidecars that must ride the archive so wake skips re-embedding.
 TAR_EXCLUDES=( --exclude='./.cache' --exclude='./.aws' )
 # aws-s3-sync-form of the same excludes, used only by the seed fallback.
 SEED_SYNC_EXCLUDES=( --exclude '.cache/*' --exclude '.aws/*' )
@@ -261,7 +265,7 @@ log "starting gateway (verbose=${CLAWLESS_VERBOSE:-0})"
 gosu clawless:clawless \
   env HOME="$WORKSPACE_DIR" \
       WORKSPACE_DIR="$WORKSPACE_DIR" \
-      MEMORY_DATA_DIR=/var/lib/clawless-memory \
+      MEMORY_DATA_DIR="$WORKSPACE_DIR/.index" \
       CLAWLESS_VERBOSE="${CLAWLESS_VERBOSE:-}" \
       /opt/clawless/venv/bin/python -m app.main &
 gateway_pid=$!

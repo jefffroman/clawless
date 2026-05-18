@@ -83,10 +83,12 @@ def _workspace_bytes(workspace_dir: str, memory_data_dir: str) -> int:
     """Sum on-disk file sizes under ``workspace_dir``, skipping
     ``memory_data_dir``.
 
-    MEMORY_DATA_DIR (the ephemeral chroma/bm25/graph tree) is normally
-    outside the workspace and is never archived, so it must not count
-    against the budget; we prune it defensively in case of an overlapping
-    config. Workspaces are small (markdown + jsonl), so a full walk is
+    MEMORY_DATA_DIR (the persisted int8-store/bm25/graph tree) now lives
+    *nested* under the workspace ($WORKSPACE_DIR/.index) so it rides the
+    single archive. It is index data, not agent-authored content, so it must
+    not count against the agent's write budget; we prune the whole subtree by
+    path containment (not just exact-equality, which only worked by os.walk
+    ordering). Workspaces are small (markdown + jsonl), so a full walk is
     sub-millisecond and exact — simpler and sounder than incremental
     accounting (these two functions are not the only writers; the agent
     also lands files via tools that go through here).
@@ -94,7 +96,8 @@ def _workspace_bytes(workspace_dir: str, memory_data_dir: str) -> int:
     total = 0
     mem_real = os.path.realpath(memory_data_dir)
     for root, dirs, files in os.walk(workspace_dir):
-        if os.path.realpath(root) == mem_real:
+        root_real = os.path.realpath(root)
+        if root_real == mem_real or root_real.startswith(mem_real + os.sep):
             dirs[:] = []
             continue
         for name in files:
@@ -319,19 +322,14 @@ async def _run_web_search(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> str:
+async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
     if not cfg.lifecycle_sfn_arn:
         return "error: LIFECYCLE_SFN_ARN not configured"
 
-    # Reindex any memory writes the agent just made before workspace sync_up
-    # (the entrypoint syncs on SIGTERM, which arrives shortly after the SFN
-    # update below). The flush itself is the agent's own behavior earlier in
-    # this conversation; here we just ensure the index reflects current files.
-    try:
-        await memory.reindex_if_stale()
-    except Exception:
-        log.exception("reindex on sleep failed; continuing with sleep")
-
+    # No reindex here: it's consolidated at the SIGTERM shutdown handler (the
+    # one chokepoint every sleep path funnels through), so the index is
+    # reconciled to the markdown uniformly whether the agent self-slept or an
+    # operator paused it. The SFN update below results in that SIGTERM.
     def _go() -> str:
         ssm = boto3.client("ssm", region_name=cfg.aws_region)
         sfn = boto3.client("stepfunctions", region_name=cfg.aws_region)
@@ -495,7 +493,7 @@ def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
                 },
                 "required": [],
             },
-            run=functools.partial(_run_sleep, cfg, memory),
+            run=functools.partial(_run_sleep, cfg),
         ),
         Tool(
             name="recall",

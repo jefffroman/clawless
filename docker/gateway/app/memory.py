@@ -1,17 +1,28 @@
 """In-process memory retrieval (lifted from former memory_server.py).
 
-ChromaDB + BM25 + NetworkX hybrid retrieval with RRF fusion. Source files live
-under ``${WORKSPACE_DIR}/memory/``; ChromaDB persists at
-``${MEMORY_DATA_DIR}`` (ephemeral per-container, rebuilt at boot).
+int8 vector store + BM25 + NetworkX hybrid retrieval with RRF fusion. Source
+markdown lives under ``${WORKSPACE_DIR}/memory/`` and is **authoritative**; the
+index (``${MEMORY_DATA_DIR}`` → ``$WORKSPACE_DIR/.index``) is a *persisted
+cache* that rides inside the single workspace archive across sleep/wake. It is
+not rebuilt on every boot — reindex is consolidated at the SIGTERM shutdown
+handler (the one chokepoint every sleep funnels through). The index is
+reconciled to the markdown by per-file SHA whenever a reindex does run.
 
-Embeddings come from ChromaDB's bundled ONNX runtime (all-MiniLM-L6-v2) — no
-torch / sentence-transformers, shaves ~300 MB off the image.
+Embeddings come from a vendored all-MiniLM-L6-v2 ONNX wrapper
+(``app.embedder.MiniLMEmbedder``: onnxruntime + tokenizers, the *same* model
+artifact chromadb shipped) — no torch / sentence-transformers, and chromadb
+itself is no longer a dependency (~167 MB / 47 packages dropped). Vectors are
+persisted ourselves as a compact int8 matrix (per-vector absmax quantization,
+~4× smaller than float32, ~1/127 distance perturbation) queried by
+brute-force squared-L2; there is no external vector DB.
 
 Reindex is per-file SHA-mapped: each source file's hash is stored individually
 in ``sync_state.json`` so a single daily-note append re-embeds one source's
-chunks rather than the whole collection. Chunk IDs are enumerated per-source
+chunks rather than the whole corpus. Chunk IDs are enumerated per-source
 (``{source}:{i}``) so surviving chunk IDs stay stable across incremental
-upserts and match the BM25 corpus written alongside.
+reindexes; the int8 store reuses prior rows **by id** and is rebuilt from the
+same ``chunks``/``all_ids`` list as the BM25 corpus in one locked pass so the
+two can never disagree on the id set.
 """
 
 from __future__ import annotations
@@ -27,14 +38,16 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-import chromadb
 import networkx as nx
-from chromadb.utils import embedding_functions
+import numpy as np
 from rank_bm25 import BM25Okapi
+
+from .embedder import MiniLMEmbedder
 
 log = logging.getLogger("clawless.memory")
 
 MODEL_NAME = "all-MiniLM-L6-v2"
+EMBED_DIM = 384  # all-MiniLM-L6-v2 output dimensionality
 RRF_K = 60
 
 # Calibrated against MiniLM-L6-v2 distance distributions: topical hits cluster
@@ -58,20 +71,26 @@ class MemoryIndex:
         self.data_dir = data_dir
         self.slug_safe = slug_safe or "default"
         self.embedder: Any | None = None
-        self.chroma_client: chromadb.api.ClientAPI | None = None
+        # In-memory handle on the persisted int8 store:
+        # {"ids": list[str], "q": int8[N,384], "scale": float32[N]}.
+        # None until warmup()/do_reindex populate it.
+        self._store: dict[str, Any] | None = None
         # Lock prevents reindex from racing against concurrent retrieval reads
-        # of the same JSON sidecars (bm25_corpus.json, memory_graph.json).
+        # of the same sidecars (vstore.npz, bm25_corpus.json, memory_graph.json).
         self.lock = asyncio.Lock()
 
     # --- lifecycle ----------------------------------------------------------
 
     def warmup(self) -> None:
         log.info("loading embedding function (%s via ONNX)", MODEL_NAME)
-        self.embedder = embedding_functions.DefaultEmbeddingFunction()
+        self.embedder = MiniLMEmbedder()
         os.makedirs(self.data_dir, exist_ok=True)
-        db_path = os.path.join(self.data_dir, "chroma_db")
-        self.chroma_client = chromadb.PersistentClient(path=db_path)
-        log.info("chromadb ready at %s", db_path)
+        self._store = self._load_store()
+        if self._store is not None:
+            log.info("vector store loaded: %d vectors from %s",
+                     len(self._store["ids"]), self._store_path())
+        else:
+            log.info("vector store absent; will build on next reindex")
 
     async def warmup_async(self) -> None:
         loop = asyncio.get_running_loop()
@@ -102,8 +121,8 @@ class MemoryIndex:
         """Stable key for a source path. Top-level docs use just the basename
         ('MEMORY.md'), daily notes are namespaced under 'memory/' to match
         the chunk metadata convention. The keys must match the strings
-        written into chunk metadata (see _collect_sources) so
-        col.delete(where={"source": k}) lines up."""
+        written into chunk metadata (see _collect_sources) so the
+        changed/removed source-key sets line up with chunk membership."""
         bn = os.path.basename(path)
         if bn in ROOT_SOURCES:
             return bn
@@ -175,6 +194,79 @@ class MemoryIndex:
             json.dump(obj, f, indent=2)
         os.replace(tmp, path)
 
+    # --- int8 vector store --------------------------------------------------
+    #
+    # Replaces chromadb's PersistentClient. Vectors are stored as a per-vector
+    # absmax-quantized int8 matrix + float32 scales, parallel to an id list.
+    # At our corpus scale (hundreds–low-thousands of chunks; the O(n^2) graph
+    # build bounds n) brute-force squared-L2 in numpy is sub-millisecond and
+    # has no HNSW to persist. ~4x smaller than float32, ~1/127 distance
+    # perturbation — well inside the 1.41–1.50 VECTOR_DISTANCE_MAX band.
+
+    def _store_path(self) -> str:
+        return os.path.join(self.data_dir, "vstore.npz")
+
+    @staticmethod
+    def _quantize(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row symmetric absmax int8. ``mat`` is float32 (M,384);
+        returns ``(q int8 (M,384), scale float32 (M,))``."""
+        mat = np.asarray(mat, dtype=np.float32)
+        scale = np.maximum(np.abs(mat).max(axis=1), 1e-12) / 127.0
+        q = np.clip(np.round(mat / scale[:, None]), -127, 127).astype(np.int8)
+        return q, scale.astype(np.float32)
+
+    @staticmethod
+    def _dequantize(q: np.ndarray, scale: np.ndarray) -> np.ndarray:
+        return q.astype(np.float32) * scale[:, None]
+
+    def _load_store(self) -> dict[str, Any] | None:
+        """Load the persisted int8 store, or None if missing/corrupt. None is
+        treated as "no store" — the next reindex rebuilds it (mirrors the
+        _load_prev_hashes None-means-rebuild contract). The .index dir is
+        restored from the agent's own versioned S3 archive, the same trust
+        boundary as the JSON sidecars, so allow_pickle for the str id array
+        is acceptable."""
+        path = self._store_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                npz = np.load(f, allow_pickle=True)
+                ids = [str(s) for s in npz["ids"].tolist()]
+                q = npz["q"]
+                scale = npz["scale"]
+            if len(ids) != q.shape[0] or len(ids) != scale.shape[0]:
+                log.warning("vector store id/row mismatch; treating as absent")
+                return None
+            return {"ids": ids, "q": q, "scale": scale}
+        except Exception:
+            log.exception("vector store load failed; treating as absent")
+            return None
+
+    def _save_store(self, ids: list[str], q: np.ndarray,
+                    scale: np.ndarray) -> None:
+        """Atomic single-file write (.tmp + os.replace, like
+        _atomic_write_json). Written into an explicit file object so np.savez
+        cannot append its own .npz to the temp name."""
+        tmp = f"{self._store_path()}.tmp"
+        with open(tmp, "wb") as f:
+            np.savez(f,
+                     ids=np.array(ids, dtype=object),
+                     q=np.asarray(q, dtype=np.int8),
+                     scale=np.asarray(scale, dtype=np.float32))
+        os.replace(tmp, self._store_path())
+
+    def has_persisted_index(self) -> bool:
+        """For main.py: is there a usable persisted index to trust on wake, or
+        is this a true first boot (or a corrupt store) that must build
+        synchronously? Keys off the store warmup() already loaded (so a
+        corrupt/unreadable vstore.npz — which _load_store turns into None —
+        forces a rebuild instead of a permanent BM25-only degradation) plus
+        the sync_state commit token. Call after warmup(); cheap (no extra
+        load, one small JSON read) — not an O(corpus) SHA scan."""
+        return (self._store is not None
+                and self._load_prev_hashes() is not None)
+
     def _load_prev_hashes(self) -> dict[str, str] | None:
         """Returns the per-file hash map from sync_state.json, or None if
         the state file is missing, malformed, or in the legacy single-
@@ -224,7 +316,7 @@ class MemoryIndex:
         return ids
 
     def do_reindex(self, changed: list[str], removed: list[str]) -> dict[str, Any]:
-        assert self.chroma_client is not None and self.embedder is not None, "warmup() not called"
+        assert self.embedder is not None, "warmup() not called"
         chunks = self._collect_sources()
         if not chunks:
             return {"status": "skipped", "reason": "no sources"}
@@ -242,49 +334,61 @@ class MemoryIndex:
             set(changed) == set(current_sources) and not removed
         )
 
-        col_name = f"memory_{self.slug_safe}"
+        N = len(chunks)
+        q_out = np.zeros((N, EMBED_DIM), dtype=np.int8)
+        scale_out = np.zeros((N,), dtype=np.float32)
+
         if full_rebuild:
             log.info("full reindex: %d chunks from %d sources",
-                     len(chunks), len(current_sources))
-            try:
-                self.chroma_client.delete_collection(col_name)
-            except Exception:
-                pass
-            col = self.chroma_client.create_collection(col_name, embedding_function=self.embedder)
-            documents = [c["content"] for c in chunks]
-            metadatas = [c["metadata"] for c in chunks]
-            col.upsert(ids=all_ids, documents=documents, metadatas=metadatas)
+                     N, len(current_sources))
+            vecs = np.asarray(
+                self.embedder([c["content"] for c in chunks]), dtype=np.float32
+            )
+            q_out, scale_out = self._quantize(vecs)
         else:
             log.info("incremental reindex: +%d changed -%d removed",
                      len(changed), len(removed))
-            col = self.chroma_client.get_or_create_collection(
-                col_name, embedding_function=self.embedder
-            )
-            # Delete all chunks belonging to changed-or-removed sources;
-            # then upsert fresh chunks for the changed sources only. The
-            # per-source id scheme (_assign_chunk_ids) means surviving
-            # chunks' ids match what BM25 will write below.
-            for src in list(changed) + list(removed):
-                try:
-                    col.delete(where={"source": src})
-                except Exception:
-                    log.exception("failed to delete chunks for %s", src)
+            prev = self._store or self._load_store() or {
+                "ids": [],
+                "q": np.zeros((0, EMBED_DIM), np.int8),
+                "scale": np.zeros((0,), np.float32),
+            }
+            prev_by_id = {sid: i for i, sid in enumerate(prev["ids"])}
             changed_set = set(changed)
-            up_ids: list[str] = []
-            up_docs: list[str] = []
-            up_metas: list[dict[str, Any]] = []
-            for chunk_id, c in zip(all_ids, chunks):
-                if c["metadata"]["source"] not in changed_set:
-                    continue
-                up_ids.append(chunk_id)
-                up_docs.append(c["content"])
-                up_metas.append(c["metadata"])
-            if up_ids:
-                col.upsert(ids=up_ids, documents=up_docs, metadatas=up_metas)
+            # Reuse prior int8 rows by chunk-id (never by position — chunk
+            # counts shift). Re-embed only chunks whose source changed (or,
+            # defensively, an unchanged chunk missing from a partial prior
+            # store). Removed sources' chunks are simply absent from `chunks`.
+            embed_pos: list[int] = []
+            embed_txt: list[str] = []
+            for p, (cid, c) in enumerate(zip(all_ids, chunks)):
+                if c["metadata"]["source"] not in changed_set and cid in prev_by_id:
+                    j = prev_by_id[cid]
+                    q_out[p] = prev["q"][j]
+                    scale_out[p] = prev["scale"][j]
+                else:
+                    embed_pos.append(p)
+                    embed_txt.append(c["content"])
+            if embed_txt:
+                vecs = np.asarray(
+                    self.embedder(embed_txt), dtype=np.float32
+                )
+                q_new, s_new = self._quantize(vecs)
+                for k, p in enumerate(embed_pos):
+                    q_out[p] = q_new[k]
+                    scale_out[p] = s_new[k]
 
-        # BM25 corpus is rebuilt from all current chunks every time —
-        # JSON dump is sub-millisecond and avoids any drift between the
-        # indexed set and the searched set.
+        # Persist the int8 store FIRST. Write order is the commit protocol:
+        # vstore -> bm25 -> graph -> sync_state.json (the commit token, last).
+        # A crash between writes leaves sync_state.json stale, so the next
+        # reindex's SHA reconciliation rebuilds — never "newer state, stale
+        # vectors". Single-file .tmp+os.replace = one atomic unit.
+        self._save_store(all_ids, q_out, scale_out)
+        self._store = {"ids": all_ids, "q": q_out, "scale": scale_out}
+
+        # BM25 corpus rebuilt from all current chunks every time — the SAME
+        # chunks/all_ids list as the store above, in one locked pass, so the
+        # store and the corpus can never disagree on the id set.
         corpus = [
             {"id": all_ids[i], "text": chunks[i]["content"],
              "section": chunks[i]["metadata"]["section"]}
@@ -301,7 +405,9 @@ class MemoryIndex:
             "agent_slug": self.slug_safe,
             "sourceHashes": self._compute_source_hashes(),
             "sources": current_sources,
-            "chromadbChunks": len(chunks),
+            "vectorChunks": N,
+            "vectorStore": "int8-absmax-v1",
+            "vectorDim": EMBED_DIM,
             "graphNodes": G.number_of_nodes(),
             "graphEdges": G.number_of_edges(),
             "lastSync": datetime.now(timezone.utc).isoformat(),
@@ -310,7 +416,7 @@ class MemoryIndex:
         self._atomic_write_json(state_path, state)
         return {
             "status": "reindexed",
-            "chunks": len(chunks),
+            "chunks": N,
             "graphNodes": G.number_of_nodes(),
             "changed": changed if not full_rebuild else current_sources,
             "removed": removed,
@@ -359,25 +465,21 @@ class MemoryIndex:
             if bm25_scores[i] > 0
         ]
 
-        if self.chroma_client is None:
-            return []
-        col_name = f"memory_{self.slug_safe}"
-        try:
-            col = self.chroma_client.get_collection(col_name, embedding_function=self.embedder)
-        except Exception:
-            return []
-
-        total = max(col.count(), 1)
-        results = col.query(
-            query_texts=[query],
-            n_results=min(n * 2, total),
-            include=["documents", "metadatas", "distances"],
-        )
-        vector_ranked = [
-            results["ids"][0][i]
-            for i in sorted(range(len(results["ids"][0])), key=lambda x: results["distances"][0][x])
-            if results["distances"][0][i] < VECTOR_DISTANCE_MAX
-        ]
+        store = self._store or self._load_store()
+        if not store or not store["ids"] or self.embedder is None:
+            vector_ranked: list[str] = []
+        else:
+            qv = np.asarray(self.embedder([query]), dtype=np.float32)[0]
+            deq = self._dequantize(store["q"], store["scale"])
+            # Full squared-L2, NOT the 2-2·dot shortcut: dequantized vectors
+            # are no longer exactly unit-norm, and VECTOR_DISTANCE_MAX is
+            # calibrated on squared-L2. Brute force is sub-ms at our scale.
+            dist = ((deq - qv) ** 2).sum(axis=1)
+            order = np.argsort(dist)[: min(n * 2, len(store["ids"]))]
+            vector_ranked = [
+                store["ids"][int(i)] for i in order
+                if dist[i] < VECTOR_DISTANCE_MAX
+            ]
 
         fused = self._rrf_fuse(bm25_ranked, vector_ranked)[:n]
         id_to_doc = {doc["id"]: doc for doc in corpus}

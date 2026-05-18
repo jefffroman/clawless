@@ -41,10 +41,12 @@ MAINTENANCE_INTERVAL_S = 1800
 PERIODIC_GROWTH_THRESHOLD = 8_000
 
 # Per-agent workspace byte budget. write_file/append_file reject a write that
-# would push the on-disk WORKSPACE_DIR tree (excluding MEMORY_DATA_DIR, a
-# separate ephemeral tree) past this. Guards against a runaway agent silently
-# filling disk until the single-archive snapshot on SIGTERM fails (whole-
-# snapshot loss — there is no per-file partial-success cushion anymore).
+# would push the on-disk WORKSPACE_DIR tree past this, excluding
+# MEMORY_DATA_DIR ($WORKSPACE_DIR/.index) — that is the persisted index, not
+# agent-authored content, so it must not count against the agent's quota
+# (pruned by containment in tools._workspace_bytes). Guards against a runaway
+# agent silently filling disk until the single-archive snapshot on SIGTERM
+# fails (whole-snapshot loss — there is no per-file partial-success cushion).
 WORKSPACE_BYTE_BUDGET = 256 * 1024 * 1024  # 256 MiB
 
 # Idle threshold for wake-time recap: anything older than this gets summarized
@@ -168,7 +170,13 @@ def load() -> Config:
         wake_messages_table=os.environ.get("WAKE_MESSAGES_TABLE", "").strip(),
         searxng_url=os.environ.get("SEARXNG_URL", "").strip(),
         workspace_dir=os.environ.get("WORKSPACE_DIR", "/home/clawless").rstrip("/"),
-        memory_data_dir=os.environ.get("MEMORY_DATA_DIR", "/var/lib/clawless-memory"),
+        memory_data_dir=(
+            os.environ.get("MEMORY_DATA_DIR", "").strip()
+            or os.path.join(
+                os.environ.get("WORKSPACE_DIR", "/home/clawless").rstrip("/"),
+                ".index",
+            )
+        ),
         verbose=_bool("CLAWLESS_VERBOSE"),
         compaction_model_id=_strip_bedrock_prefix(
             os.environ.get("CLAWLESS_COMPACTION_MODEL", "").strip()

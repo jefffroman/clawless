@@ -80,23 +80,27 @@ SIGTERM, runs `snapshot()`, and exits. S3 data remains intact. On wake
 
 When the agent invokes the `sleep` tool, an automatic pre-sleep flush
 runs first — capturing durable session knowledge into
-`memory/YYYY-MM-DD.md` and refreshing the search index — before the SFN
-fires and `snapshot()` runs. So the archived workspace always reflects the
-agent's most recent durable-knowledge capture, even if the user never
-asked the agent to write anything explicitly. See [memory.md](memory.md)
-for the flush architecture.
+`memory/YYYY-MM-DD.md` — and the index is reindexed in the SIGTERM
+shutdown handler (the one chokepoint every sleep funnels through) before
+`snapshot()` runs. So the archived workspace always reflects the agent's
+most recent durable-knowledge capture **with a consistent index**, even
+if the user never asked the agent to write anything explicitly. See
+[memory.md](memory.md) for the flush + reindex architecture.
 
 ## Excluded from the archive
 
 | Pattern | Reason |
 |---------|--------|
-| `.cache/*` | Bytecode / pip / chromadb caches |
+| `.cache/*` | Bytecode / pip / ONNX-model caches (re-derivable) |
 | `.aws/*` | Per-boot AWS SDK config (none today, reserved) |
 
-`MEMORY_DATA_DIR` (`/var/lib/clawless-memory`: chroma + bm25 + graph) is a
-separate ephemeral tree outside `$WORKSPACE_DIR` and is intentionally **not**
-archived — the markdown under `memory/` is the source of truth; the index is
-rebuilt on boot.
+`MEMORY_DATA_DIR` is now `$WORKSPACE_DIR/.index` — **inside** `$WORKSPACE_DIR`
+and **deliberately archived** (it is *not* in the exclude list above). It
+holds the persisted int8 vector store + bm25/graph/`sync_state.json`, so wake
+restores the index instead of re-embedding the whole corpus. The markdown
+under `memory/` remains the source of truth; the index is reconciled to it by
+per-file SHA whenever a reindex runs (consolidated at the SIGTERM shutdown
+handler — see [memory.md](memory.md)).
 
 ## Restore from S3
 

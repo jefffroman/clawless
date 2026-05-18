@@ -88,13 +88,17 @@ aws logs tail /clawless/fargate/<client>-<agent> --follow --region us-east-1 \
   | grep -E "flush|reindex|compaction"
 ```
 
-**Reset a stuck index** (rare — only if `chroma_db` is corrupted or the
-`sync_state.json` is out of sync with the workspace markdown):
+**Reset a stuck index** (rare — only if `.index/vstore.npz` is corrupted or
+`sync_state.json` has drifted from the workspace markdown):
 ```bash
 aws ecs update-service --cluster clawless --service clawless-<client>-<agent> \
   --force-new-deployment --region us-east-1
 ```
-The new task rebuilds the index from scratch on boot.
+The graceful stop runs the SIGTERM shutdown reindex, which SHA-reconciles a
+*drifted* index before the snapshot. A *corrupt* `vstore.npz` is detected on
+the next boot (`_load_store` → unreadable → treated as first boot) and
+rebuilt synchronously. The index is normally restored from the archive, not
+rebuilt — a bare wake does **not** rebuild it.
 
 **Disable periodic flush** (e.g., to control cost during a long passive
 session): set `CLAWLESS_PERIODIC_GROWTH_THRESHOLD` to a very high value
