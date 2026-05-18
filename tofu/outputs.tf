@@ -1,5 +1,5 @@
 output "backup_bucket" {
-  description = "Shared S3 backup bucket name. Client workspaces are stored under clients/{slug}/workspace/."
+  description = "Shared S3 backup bucket name. Each agent's workspace is one versioned object at agents/{slug}/workspace.tar.zst."
   value       = aws_s3_bucket.backups.id
 }
 

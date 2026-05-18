@@ -40,6 +40,15 @@ MAINTENANCE_INTERVAL_S = 1800
 # for a session if its tokens-since-last-flush exceeds this.
 PERIODIC_GROWTH_THRESHOLD = 8_000
 
+# Per-agent workspace byte budget. write_file/append_file reject a write that
+# would push the on-disk WORKSPACE_DIR tree past this, excluding
+# MEMORY_DATA_DIR ($WORKSPACE_DIR/.index) — that is the persisted index, not
+# agent-authored content, so it must not count against the agent's quota
+# (pruned by containment in tools._workspace_bytes). Guards against a runaway
+# agent silently filling disk until the single-archive snapshot on SIGTERM
+# fails (whole-snapshot loss — there is no per-file partial-success cushion).
+WORKSPACE_BYTE_BUDGET = 256 * 1024 * 1024  # 256 MiB
+
 # Idle threshold for wake-time recap: anything older than this gets summarized
 # into a "Last Session Recap" block prepended to the new session's prompt.
 IDLE_RECAP_SECONDS = 3600
@@ -97,6 +106,7 @@ class Config:
     hard_ceiling_tokens: int = HARD_CEILING_TOKENS
     maintenance_interval_s: int = MAINTENANCE_INTERVAL_S
     periodic_growth_threshold: int = PERIODIC_GROWTH_THRESHOLD
+    workspace_byte_budget: int = WORKSPACE_BYTE_BUDGET
 
     @property
     def memory_source_dir(self) -> str:
@@ -160,7 +170,13 @@ def load() -> Config:
         wake_messages_table=os.environ.get("WAKE_MESSAGES_TABLE", "").strip(),
         searxng_url=os.environ.get("SEARXNG_URL", "").strip(),
         workspace_dir=os.environ.get("WORKSPACE_DIR", "/home/clawless").rstrip("/"),
-        memory_data_dir=os.environ.get("MEMORY_DATA_DIR", "/var/lib/clawless-memory"),
+        memory_data_dir=(
+            os.environ.get("MEMORY_DATA_DIR", "").strip()
+            or os.path.join(
+                os.environ.get("WORKSPACE_DIR", "/home/clawless").rstrip("/"),
+                ".index",
+            )
+        ),
         verbose=_bool("CLAWLESS_VERBOSE"),
         compaction_model_id=_strip_bedrock_prefix(
             os.environ.get("CLAWLESS_COMPACTION_MODEL", "").strip()
@@ -177,5 +193,8 @@ def load() -> Config:
         ),
         periodic_growth_threshold=_int(
             "CLAWLESS_PERIODIC_GROWTH_THRESHOLD", PERIODIC_GROWTH_THRESHOLD,
+        ),
+        workspace_byte_budget=_int(
+            "CLAWLESS_WORKSPACE_BYTE_BUDGET", WORKSPACE_BYTE_BUDGET,
         ),
     )

@@ -61,11 +61,16 @@ if [[ "$FORCE" == false ]]; then
   fi
 fi
 
-# Delete active flag and error state (the main SSM record is deleted by the
-# Step Functions DeleteSSM state — deleting it here would cause SFN to fail
-# with ParameterNotFound since DeleteSSM has no error handling).
-aws ssm delete-parameter --name "${AGENT_PARAM}/active" --region "$REGION" 2>/dev/null || true
-aws ssm delete-parameter --name "${AGENT_PARAM}/error" --region "$REGION" 2>/dev/null || true
+# Delete every sub-parameter under the agent path (/active, /error, /verbose,
+# /gateway_token, …). get-parameters-by-path is hierarchical: it returns only
+# children, never the main record at the parent path — that one is deleted by
+# the SFN DeleteSSM state (which has no error handling, so we must not delete
+# it here). Enumerating is future-proof; the old hardcoded /active+/error list
+# orphaned /verbose (and would orphan the gateway_token SecureString).
+for _p in $(aws ssm get-parameters-by-path --path "$AGENT_PARAM" --recursive \
+  --region "$REGION" --query 'Parameters[].Name' --output text 2>/dev/null || true); do
+  aws ssm delete-parameter --name "$_p" --region "$REGION" 2>/dev/null || true
+done
 
 log "Invoking Step Functions (lifecycle)..."
 SFN_ARN=$(aws stepfunctions list-state-machines --region "$REGION" \

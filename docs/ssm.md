@@ -48,7 +48,8 @@ The agent config record. Stored as a **SecureString** because it embeds channel 
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `client_name` | string | yes | — | Human-readable customer name |
-| `agent_name` | string | yes | — | Human-readable agent name |
+| `agent_name` | string | yes | — | Human-readable agent name (free-form; no longer selects the persona) |
+| `persona` | string | yes | — | Persona key to seed (`seed/personas/<key>/`). Decoupled from `agent_name`; required — an empty/unknown persona fails `tofu plan` (no fallback) |
 | `agent_channel` | string | yes | — | `telegram`, `discord`, or `slack` |
 | `channel_config` | object | yes | `null` | Channel-specific config; contains bot token(s), `dmPolicy`, `allowFrom` |
 | `agent_style` | string | no | `""` | Reserved for per-agent persona tuning (not yet consumed) |

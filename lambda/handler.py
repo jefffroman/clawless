@@ -25,7 +25,6 @@ Failure handling:
   - Mass failure (>1 slug or systemic): stop, alert, let operator investigate.
 """
 
-import datetime
 import json
 import os
 import re
@@ -533,6 +532,16 @@ def _apply(work_dir, version, agents, affected_slugs, errored_slugs):
 
     print(f"Applying {len(apply_slugs)} agent(s): {sorted(apply_slugs)}")
 
+    # Re-used-slug hygiene: a slug being (re)created is desired in SSM but
+    # absent from tofu state. Purge its cold archive (removed/{slug}/) so the
+    # new tenant starts with a clean namespace and the prior life's safety
+    # copy isn't silently inherited. The live archive (agents/{slug}/...) is
+    # already purged at remove() — not re-touched here (single responsibility;
+    # keep removed/ a pure cold net). Slugs already in state (live re-applies,
+    # in-flight removals) are untouched.
+    for slug in sorted(apply_slugs - state_slugs):
+        _purge_prefix_all_versions(f"removed/{slug}/")
+
     # Batched apply with multiple -target flags
     target_args = [f'-target=module.client["{slug}"]' for slug in sorted(apply_slugs)]
     try:
@@ -679,29 +688,106 @@ def _send_alert(subject, message):
 # ── Helper functions ─────────────────────────────────────────────────────────
 
 def _archive_agent_prefix(slug):
-    """Archive a removed agent's workspace in-place in the shared backup bucket.
+    """Archive a removed agent's workspace before tofu destroy.
 
-    Copies agents/{slug}/* → removed/{slug}/{date}/* inside BACKUP_BUCKET, then
-    deletes the original prefix so tofu destroy doesn't trip over it. Idempotent:
-    if the source prefix is empty we skip silently.
+    Single-archive model: the agent's whole workspace is one versioned object
+    (agents/{slug}/workspace.tar.zst). On removal we copy the current version
+    to removed/{slug}/workspace.tar.zst (overwrite ⇒ a new S3 version — NO
+    date component; history is S3 versions only, per #5's hard invariant),
+    then purge EVERY version of the source archive key. Deleting only the
+    current version (a delete marker) would leave noncurrent versions that
+    restore()'s prior-version fallback resurrects if the slug is ever
+    re-created — purging the whole lineage fixes that at the source. The
+    tofu-managed seed prefix (agents/{slug}/workspace/...) is intentionally
+    NOT touched; tofu destroy owns its teardown.
+
+    Idempotent: if the archive was never written (agent removed before it
+    ever slept) the copy is skipped and the purge no-ops. Safe to re-run.
     """
-    src_prefix = f"agents/{slug}/"
-    dst_prefix = f"removed/{slug}/{datetime.date.today().isoformat()}/"
-    print(f"[remove:{slug}] archiving {src_prefix} → {dst_prefix} in {BACKUP_BUCKET}")
+    src_key = f"agents/{slug}/workspace.tar.zst"
+    dst_key = f"removed/{slug}/workspace.tar.zst"
+    print(f"[remove:{slug}] archiving {src_key} → {dst_key} in {BACKUP_BUCKET}")
 
-    paginator = s3.get_paginator("list_objects_v2")
-    count = 0
-    for page in paginator.paginate(Bucket=BACKUP_BUCKET, Prefix=src_prefix):
-        for obj in page.get("Contents", []):
-            rel = obj["Key"][len(src_prefix):]
-            s3.copy_object(
-                CopySource={"Bucket": BACKUP_BUCKET, "Key": obj["Key"]},
-                Bucket=BACKUP_BUCKET,
-                Key=dst_prefix + rel,
-            )
-            s3.delete_object(Bucket=BACKUP_BUCKET, Key=obj["Key"])
-            count += 1
-    print(f"[remove:{slug}] archived {count} object(s)")
+    try:
+        s3.copy_object(
+            CopySource={"Bucket": BACKUP_BUCKET, "Key": src_key},
+            Bucket=BACKUP_BUCKET,
+            Key=dst_key,
+        )
+        print(f"[remove:{slug}] archived 1 object")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404", "NotFound"):
+            print(f"[remove:{slug}] no current archive (never slept); "
+                  f"purging any lingering versions anyway")
+        else:
+            raise
+
+    # Purge the whole archive-key lineage (current + noncurrent + markers).
+    # Raises on partial failure → the slug stays in tofu state and the next
+    # lifecycle pass re-runs this, rather than orphaning stale versions.
+    _purge_prefix_all_versions(src_key)
+
+
+def _purge_prefix_all_versions(prefix):
+    """Delete every object version AND delete-marker under an S3 prefix in the
+    backup bucket. Idempotent (no-ops on an empty prefix).
+
+    The bucket is versioned, so a plain delete only adds a marker and the
+    noncurrent versions survive the lifecycle window. Used in two places:
+      - remove(): purge all versions of agents/{slug}/workspace.tar.zst after
+        copying it to removed/, so restore()'s prior-version fallback can
+        never resurrect a removed agent into a re-used slug.
+      - (re)create: purge removed/{slug}/ so a re-used slug starts with a
+        clean cold-archive namespace.
+
+    On ANY failure — a per-object error (delete_objects with Quiet=True still
+    returns an Errors list), or an exception from list/delete — this sends an
+    SNS admin alert with the exact bucket/prefix and a copy-paste cleanup
+    command, THEN re-raises. The email guarantees an operator can clean up
+    manually; the raise propagates into the existing taint/error/retry path
+    (slug stays in tofu state and the next lifecycle pass re-runs this),
+    instead of silently letting a broken removal report success and orphan
+    stale versions. (Runs in-Lambda, so the dev-box egress quirk that breaks
+    client-side multi-object DELETE does not apply here.)
+    """
+    paginator = s3.get_paginator("list_object_versions")
+    deleted = 0
+    try:
+        for page in paginator.paginate(Bucket=BACKUP_BUCKET, Prefix=prefix):
+            objs = [
+                {"Key": o["Key"], "VersionId": o["VersionId"]}
+                for o in page.get("Versions", []) + page.get("DeleteMarkers", [])
+            ]
+            for i in range(0, len(objs), 1000):
+                resp = s3.delete_objects(
+                    Bucket=BACKUP_BUCKET,
+                    Delete={"Objects": objs[i:i + 1000], "Quiet": True},
+                )
+                errors = resp.get("Errors", [])
+                if errors:
+                    raise RuntimeError(
+                        f"{len(errors)} object(s) failed to delete, "
+                        f"e.g. {errors[0]}"
+                    )
+                deleted += len(objs[i:i + 1000])
+    except Exception as e:
+        _send_alert(
+            f"S3 purge FAILED under {prefix}",
+            f"Purging all versions under "
+            f"s3://{BACKUP_BUCKET}/{prefix} failed after deleting "
+            f"{deleted} object version(s): {e!r}\n\n"
+            f"Stale versions may remain — restore()'s prior-version "
+            f"fallback could resurrect them into a re-used slug. Manual "
+            f"cleanup required:\n"
+            f"  aws s3api list-object-versions --bucket {BACKUP_BUCKET} "
+            f"--prefix '{prefix}'\n"
+            f"then delete each listed Key/VersionId.",
+        )
+        raise
+    if deleted:
+        print(f"purged {deleted} object version(s) under {prefix}")
+    return deleted
 
 
 def _parse_state_slugs(output):

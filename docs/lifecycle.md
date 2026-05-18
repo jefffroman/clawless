@@ -29,7 +29,7 @@ All resources exist. ECS service running at `desired_count=1`. Gateway container
 
 ### Sleeping (`active: false` in SSM)
 
-ECS service at `desired_count=0`. No running tasks — no compute costs. All durable resources (IAM, S3 data, log group, task def) preserved. Container ran `sync_up()` on SIGTERM before exiting.
+ECS service at `desired_count=0`. No running tasks — no compute costs. All durable resources (IAM, S3 data, log group, task def) preserved. Container ran `snapshot()` on SIGTERM before exiting.
 
 **Telegram only:** On sleep, the gateway container redirects the agent's Telegram webhook to the wake-listener Lambda Function URL (`setWebhook`). While sleeping, incoming Telegram messages are queued in DynamoDB (`clawless-wake-messages`) and trigger an automatic wake via the lifecycle SFN.
 
@@ -44,7 +44,7 @@ On wake, the gateway deletes the webhook (`deleteWebhook`) immediately before re
 
 ### Removed (SSM key deleted)
 
-All resources destroyed. Workspace archived to `removed/{slug}/{date}/` in the shared bucket before teardown.
+All resources destroyed. Workspace archived to `removed/{slug}/workspace.tar.zst` (one versioned object, no dated keys) in the shared bucket before teardown.
 
 ```bash
 ./scripts/remove-agent.sh <client-slug> <agent-slug>
@@ -113,12 +113,12 @@ GRAB → CLASSIFY → FAST/SLOW DISPATCH → RELEASE
 3. FAST PATH (sleep/wake):
    - Existing service → ecs:UpdateService desired=0 or 1. Done in seconds.
    - Wake is a single UpdateService call: `desiredCount=1` is combined with `forceNewDeployment=True` only when :latest has been pushed to ECR since the last deployment. One API call → one deployment → one task launch, on the fresh image. ECS otherwise caches the resolved digest, so omitting forceNewDeployment on an unchanged image keeps wake speed predictable.
-   - Container SIGTERM handler syncs workspace to S3 on sleep.
-   - Container sync_down restores workspace on wake.
+   - Container SIGTERM handler snapshots the workspace archive to S3 on sleep.
+   - Container restore extracts the workspace archive on wake.
 
 4. SLOW PATH (add/remove):
    - Add: tofu apply creates ECS service, task def, IAM role, seed S3 workspace.
-   - Remove: archive S3 prefix, tofu destroy the module.
+   - Remove: archive the workspace object, tofu destroy the module.
 
 5. RELEASE: Conditional DeleteItem (timestamp must match grabbed value).
    - If condition fails → record was overwritten → unconditional delete.

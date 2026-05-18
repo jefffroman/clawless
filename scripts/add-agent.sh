@@ -48,6 +48,32 @@ AGENT_SLUG="$(slugify "$AGENT_NAME")"
 echo "  Agent slug:  ${AGENT_SLUG}"
 echo "  SSM path:    /clawless/clients/${CLIENT_SLUG}/${AGENT_SLUG}"
 
+# ── Persona (explicit, required — decoupled from the agent name) ──────────────
+# Persona is its OWN parameter: one client may run several agents of the same
+# persona under different names. The input is normalized exactly as tofu's
+# seed.tf does (lower → trim → [^a-z0-9_-] becomes '-') — NOT slugify (which
+# collapses repeats and trims dashes; persona_key must not). Reject an unknown
+# persona here, before any SSM write or SFN trigger, so the failure is at the
+# UI rather than deep inside a lifecycle apply. There is no agent-name
+# fallback in seed.tf, so a valid persona is mandatory.
+PERSONA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tofu/modules/client/seed/personas"
+if compgen -G "${PERSONA_ROOT}/*/SOUL.md.tftpl" >/dev/null 2>&1; then
+  echo "  Available personas:"
+  for __p in "${PERSONA_ROOT}"/*/SOUL.md.tftpl; do
+    echo "    - $(basename "$(dirname "$__p")")"
+  done
+fi
+ask PERSONA "Persona (e.g. lifecoach)"
+PERSONA_KEY="$(printf '%s' "$PERSONA" | tr '[:upper:]' '[:lower:]' \
+  | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/[^a-z0-9_-]/-/g')"
+if [[ ! -f "${PERSONA_ROOT}/${PERSONA_KEY}/SOUL.md.tftpl" ]]; then
+  echo "Error: no persona '${PERSONA_KEY}' (from input '${PERSONA}')." >&2
+  echo "       Expected ${PERSONA_ROOT}/${PERSONA_KEY}/SOUL.md.tftpl" >&2
+  echo "       A valid persona is required — there is no agent-name fallback." >&2
+  exit 1
+fi
+echo "  Persona:     ${PERSONA_KEY}"
+
 # ── Channel ───────────────────────────────────────────────────────────────────
 hr
 ask CHANNEL "Channel (telegram / discord / slack)" "telegram"
@@ -91,11 +117,13 @@ esac
 AGENT_VALUE="$(jq -cn \
   --arg client_name    "$CLIENT_NAME" \
   --arg agent_name     "$AGENT_NAME" \
+  --arg persona        "$PERSONA_KEY" \
   --arg agent_channel  "$CHANNEL" \
   --argjson channel_config "$CHANNEL_CONFIG" \
   '{
     client_name:    $client_name,
     agent_name:     $agent_name,
+    persona:        $persona,
     agent_channel:  $agent_channel,
     channel_config: $channel_config
   }')"

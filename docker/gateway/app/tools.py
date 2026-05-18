@@ -1,8 +1,10 @@
 """Built-in tools exposed to Bedrock Converse.
 
-Six tools, no manifest loader, no subprocess plugin model. Memory-curation is
-a system-prompt protocol the agent enacts via ``read_file`` / ``write_file``
-on its own ``memory/`` directory; it is not a tool here.
+Seven tools, no manifest loader, no subprocess plugin model. Memory-curation
+is a system-prompt protocol the agent enacts via ``read_file`` /
+``write_file`` / ``append_file`` on its own ``memory/`` directory. Memory
+*retrieval* is the ``recall`` tool (a thin wrapper over the index); how it
+works internally is not exposed to the agent.
 
 Tool contract: each Tool has a JSON schema (Bedrock toolConfig) and an async
 ``run(input)`` that returns text. ``run`` may raise; callers wrap into a
@@ -75,6 +77,35 @@ def _resolve_scoped(workspace_dir: str, rel_path: str) -> str:
     if candidate != workspace_real and not candidate.startswith(workspace_real + os.sep):
         raise PathScopeError(f"path {rel_path!r} escapes workspace {workspace_dir!r}")
     return candidate
+
+
+def _workspace_bytes(workspace_dir: str, memory_data_dir: str) -> int:
+    """Sum on-disk file sizes under ``workspace_dir``, skipping
+    ``memory_data_dir``.
+
+    MEMORY_DATA_DIR (the persisted int8-store/bm25/graph tree) now lives
+    *nested* under the workspace ($WORKSPACE_DIR/.index) so it rides the
+    single archive. It is index data, not agent-authored content, so it must
+    not count against the agent's write budget; we prune the whole subtree by
+    path containment (not just exact-equality, which only worked by os.walk
+    ordering). Workspaces are small (markdown + jsonl), so a full walk is
+    sub-millisecond and exact — simpler and sounder than incremental
+    accounting (these two functions are not the only writers; the agent
+    also lands files via tools that go through here).
+    """
+    total = 0
+    mem_real = os.path.realpath(memory_data_dir)
+    for root, dirs, files in os.walk(workspace_dir):
+        root_real = os.path.realpath(root)
+        if root_real == mem_real or root_real.startswith(mem_real + os.sep):
+            dirs[:] = []
+            continue
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +199,20 @@ async def _run_write_file(cfg: Config, args: dict[str, Any]) -> str:
         path = _resolve_scoped(cfg.workspace_dir, rel)
     except PathScopeError as e:
         return f"error: {e}"
+    budget = cfg.workspace_byte_budget
+    new_bytes = len(content.encode("utf-8"))
+    if new_bytes > budget:
+        return (f"error: write of {new_bytes} bytes exceeds the workspace "
+                f"budget of {budget} bytes")
+    # write_file replaces the target, so its current size is freed.
+    existing = os.path.getsize(path) if os.path.isfile(path) else 0
+    projected = (
+        _workspace_bytes(cfg.workspace_dir, cfg.memory_data_dir)
+        - existing + new_bytes
+    )
+    if projected > budget:
+        return (f"error: write would exceed the workspace budget "
+                f"({projected} > {budget} bytes); delete unused files first")
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -187,6 +232,18 @@ async def _run_append_file(cfg: Config, args: dict[str, Any]) -> str:
         path = _resolve_scoped(cfg.workspace_dir, rel)
     except PathScopeError as e:
         return f"error: {e}"
+    budget = cfg.workspace_byte_budget
+    new_bytes = len(content.encode("utf-8"))
+    if new_bytes > budget:
+        return (f"error: append of {new_bytes} bytes exceeds the workspace "
+                f"budget of {budget} bytes")
+    # append_file keeps the existing file; we only add new_bytes.
+    projected = (
+        _workspace_bytes(cfg.workspace_dir, cfg.memory_data_dir) + new_bytes
+    )
+    if projected > budget:
+        return (f"error: append would exceed the workspace budget "
+                f"({projected} > {budget} bytes); delete unused files first")
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -265,19 +322,14 @@ async def _run_web_search(cfg: Config, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> str:
+async def _run_sleep(cfg: Config, args: dict[str, Any]) -> str:
     if not cfg.lifecycle_sfn_arn:
         return "error: LIFECYCLE_SFN_ARN not configured"
 
-    # Reindex any memory writes the agent just made before workspace sync_up
-    # (the entrypoint syncs on SIGTERM, which arrives shortly after the SFN
-    # update below). The flush itself is the agent's own behavior earlier in
-    # this conversation; here we just ensure the index reflects current files.
-    try:
-        await memory.reindex_if_stale()
-    except Exception:
-        log.exception("reindex on sleep failed; continuing with sleep")
-
+    # No reindex here: it's consolidated at the SIGTERM shutdown handler (the
+    # one chokepoint every sleep path funnels through), so the index is
+    # reconciled to the markdown uniformly whether the agent self-slept or an
+    # operator paused it. The SFN update below results in that SIGTERM.
     def _go() -> str:
         ssm = boto3.client("ssm", region_name=cfg.aws_region)
         sfn = boto3.client("stepfunctions", region_name=cfg.aws_region)
@@ -304,6 +356,24 @@ async def _run_sleep(cfg: Config, memory: MemoryIndex, args: dict[str, Any]) -> 
     except Exception as e:
         log.exception("sleep tool failed")
         return f"error: sleep request failed: {e}"
+
+
+# ---------------------------------------------------------------------------
+# recall (built-in: query long-term memory)
+# ---------------------------------------------------------------------------
+
+
+async def _run_recall(memory: MemoryIndex, args: dict[str, Any]) -> str:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "recall: 'query' is required."
+    try:
+        top_n = int(args.get("top_n", 5))
+    except (TypeError, ValueError):
+        top_n = 5
+    top_n = max(1, min(top_n, 20))
+    out = await memory.retrieve_markdown(query, top_n=top_n, compact=False)
+    return out or "Nothing relevant in memory for that."
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +493,23 @@ def build_registry(cfg: Config, memory: MemoryIndex) -> dict[str, Tool]:
                 },
                 "required": [],
             },
-            run=functools.partial(_run_sleep, cfg, memory),
+            run=functools.partial(_run_sleep, cfg),
+        ),
+        Tool(
+            name="recall",
+            description=(
+                "Look something up in your long-term memory. Returns the most "
+                "relevant saved notes for the query."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to look up."},
+                    "top_n": {"type": "integer", "description": "Max notes to return (1-20; default 5)."},
+                },
+                "required": ["query"],
+            },
+            run=functools.partial(_run_recall, memory),
         ),
     ]
     return {t.name: t for t in tools}
