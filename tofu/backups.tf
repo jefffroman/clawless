@@ -5,9 +5,14 @@
 # are no dated keys. That bounded key set is what lets the lifecycle below
 # actually expire old state (unbounded distinct keys were the root cause it
 # could not bound before). On removal the Lambda copies the object to
-# removed/{slug}/workspace.tar.zst (also one versioned key, no date) before
-# destroying it.
-# Lifecycle (unchanged): current kept indefinitely, 2 noncurrent kept ≥7 days.
+# removed/{slug}/workspace.tar.zst (also one versioned key, no date), then
+# purges every version of the live agents/{slug}/workspace.tar.zst.
+# Lifecycle: under agents/, current kept indefinitely + 2 noncurrent ≥7 days.
+# removed/ is a pure cold safety net (never read by code; manual recovery
+# only) — its own rule expires it (current + noncurrent) after
+# var.removed_archive_retention_days (default 1) so stale cold copies don't
+# accumulate. This is issue #5's deferred "bounded removed/ retention",
+# decided explicitly here (tunable pending real business/data needs).
 
 resource "aws_s3_bucket" "backups" {
   bucket = "clawless-backups-${data.aws_caller_identity.root.account_id}"
@@ -54,6 +59,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     noncurrent_version_expiration {
       newer_noncurrent_versions = 2
       noncurrent_days           = 7
+    }
+  }
+
+  # removed/ cold archives: bounded retention so stale safety copies don't
+  # accumulate. Scoped to the removed/ prefix only — agents/ keeps the
+  # rotate-backups policy above.
+  rule {
+    id     = "expire-removed-archives"
+    status = "Enabled"
+
+    filter {
+      prefix = "removed/"
+    }
+
+    expiration {
+      days = var.removed_archive_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.removed_archive_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 
@@ -112,6 +141,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup_replica" {
     noncurrent_version_expiration {
       newer_noncurrent_versions = 1
       noncurrent_days           = 3
+    }
+  }
+
+  # removed/ cold archives on the replica: same bounded retention. CRR does
+  # not replicate version-specific deletes, so the primary-side purge never
+  # reaches here — this rule is what actually bounds removed/ on the replica.
+  rule {
+    id     = "expire-removed-archives"
+    status = "Enabled"
+
+    filter {
+      prefix = "removed/"
+    }
+
+    expiration {
+      days = var.removed_archive_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.removed_archive_retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 

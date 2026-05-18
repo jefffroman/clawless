@@ -21,6 +21,12 @@ variable "replica_region" {
   default     = "us-east-2"
 }
 
+variable "removed_archive_retention_days" {
+  description = "Days to retain removed/{slug}/ cold archives before S3 expiry (current objects + noncurrent versions). removed/ is a pure cold safety net — never read by code; recovery is manual. Starting at 1 pending real business/data retention requirements (issue #5); tune as the policy is decided."
+  type        = number
+  default     = 1
+}
+
 variable "tags" {
   description = "Tags applied to all taggable resources."
   type        = map(string)
