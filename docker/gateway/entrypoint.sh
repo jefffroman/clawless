@@ -76,6 +76,7 @@ snapshot() {
     return 0
   fi
   local tmp_tar rc_tar rc_zstd
+  local -a rc=()
   tmp_tar="$(mktemp /tmp/clawless-snap.XXXXXX)" || {
     log "snapshot failed: mktemp (non-fatal)"; return 0; }
 
@@ -86,8 +87,14 @@ snapshot() {
   tar -C "$WORKSPACE_DIR" "${TAR_EXCLUDES[@]}" \
       --warning=no-file-changed -cf - . \
     | zstd -q -1 -T0 -f -o "$tmp_tar"
-  rc_tar=${PIPESTATUS[0]}; rc_zstd=${PIPESTATUS[1]}
+  # Capture the WHOLE PIPESTATUS array in one command, before any other
+  # simple command (incl. a second assignment) resets it. `set -u` is still
+  # on (set +e only suspended errexit), so a bare ${PIPESTATUS[1]} after
+  # ${PIPESTATUS[0]} was clobbered aborted the script before the upload —
+  # silently breaking every snapshot since the single-archive model.
+  rc=( "${PIPESTATUS[@]}" )
   set -e
+  rc_tar=${rc[0]:-0}; rc_zstd=${rc[1]:-0}
 
   if { [ "$rc_tar" -ne 0 ] && [ "$rc_tar" -ne 1 ]; } || [ "$rc_zstd" -ne 0 ]; then
     log "snapshot failed: tar=${rc_tar} zstd=${rc_zstd} (non-fatal)"
