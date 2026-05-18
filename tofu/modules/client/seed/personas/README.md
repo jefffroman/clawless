@@ -1,33 +1,39 @@
 # Personas
 
-A persona is a pre-formed character an agent ships as. The agent's **name**
-selects the persona — there is no generic fallback.
+A persona is a pre-formed character an agent ships as. The persona is an
+**explicit, required parameter** (`persona`), fully decoupled from the agent
+name — one client may run several agents of the same persona under different
+names. There is no generic fallback and no agent-name fallback.
 
 ## How selection works
 
-`seed.tf` normalizes the effective agent name into a `persona_key`:
+`add-agent.sh` prompts for the persona separately from the agent name and
+writes it into the SSM record. `seed.tf` normalizes `var.persona` into a
+`persona_key`:
 
 ```
-persona_key = replace(lower(trimspace(agent_name)), "/[^a-z0-9_-]/", "-")
+persona_key = replace(lower(trimspace(persona)), "/[^a-z0-9_-]/", "-")
 ```
 
-Examples: `"gamer"` → `gamer`, `"Pixel Pal"` → `pixel-pal`, `"Coach_01"` →
+Examples: `"gamer"` → `gamer`, `"Life Coach"` → `life-coach`, `"Coach_01"` →
 `coach_01`.
 
 The persona directory is `seed/personas/<persona_key>/`.
 
 ## Fail-early contract
 
-`SOUL.md.tftpl` in the matched persona directory is **mandatory**. If no
-directory matches the name, `tofu plan` fails *before any apply* with:
+`SOUL.md.tftpl` in the matched persona directory is **mandatory**. If
+`persona` is empty or no directory matches it, `tofu plan` fails *before any
+apply* with:
 
 ```
-Unknown persona '<key>' for agent '<name>'. Expected
+Invalid persona '<key>' (var.persona=<value>) for agent '<name>'. A valid
+persona is required — there is no agent-name fallback. Expected
 seed/personas/<key>/SOUL.md.tftpl. Available personas: <list>
 ```
 
-There is no default/generic SOUL. Pick a name that matches a persona, or add
-the persona first.
+There is no default/generic SOUL. Choose an existing persona, or add the
+persona first.
 
 ## A persona directory
 

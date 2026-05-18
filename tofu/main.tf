@@ -4,6 +4,7 @@ module "client" {
 
   agent_slug               = each.key
   agent_name               = try(each.value.agent_name, "")
+  persona                  = try(each.value.persona, "")
   client_name              = try(each.value.client_name, "")
   agent_style              = try(each.value.agent_style, "")
   agent_channel            = try(each.value.agent_channel, "")

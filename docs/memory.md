@@ -44,18 +44,20 @@ ${WORKSPACE_DIR}/
 
 ## Personas
 
-An agent ships as a pre-formed **persona**, selected by its name. `seed.tf`
-normalizes the effective agent name to a `persona_key`
-(`lower`, then `[^a-z0-9_-]` → `-`) and seeds `SOUL.md` from
+An agent ships as a pre-formed **persona**. The persona is an **explicit,
+required** SSM field (`persona`), fully decoupled from the agent name — one
+client can run several agents of the same persona under different names.
+`seed.tf` normalizes `var.persona` to a `persona_key` (`lower`, then
+`[^a-z0-9_-]` → `-`) and seeds `SOUL.md` from
 `tofu/modules/client/seed/personas/<persona_key>/SOUL.md.tftpl`. A persona may
 also override `MEMORY.md`/`USER.md`; anything it doesn't ship falls back to
 the generic scaffold in `seed/`.
 
-There is **no generic SOUL** — an unknown persona fails `tofu plan` early via a
-resource precondition. Persona resolves at agent creation only (seed objects
-are write-once via `ignore_changes`). Authoring guide and the content rule
-(no infrastructure/mechanism in any client-reachable file):
-`tofu/modules/client/seed/personas/README.md`.
+There is **no generic SOUL and no agent-name fallback** — an empty or unknown
+persona fails `tofu plan` early via a resource precondition. Persona resolves
+at agent creation only (seed objects are write-once via `ignore_changes`).
+Authoring guide and the content rule (no infrastructure/mechanism in any
+client-reachable file): `tofu/modules/client/seed/personas/README.md`.
 
 ## Retrieval
 

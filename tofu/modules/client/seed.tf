@@ -10,11 +10,13 @@
 # the first SIGTERM onward the agent's state lives in the single versioned
 # workspace.tar.zst archive and this seed prefix is no longer read.
 #
-# Persona model: the normalized agent name selects a persona directory under
-# seed/personas/<persona_key>/. SOUL.md is persona-defined and mandatory —
-# there is no generic fallback; an unknown persona fails `plan` early (see the
-# precondition below). MEMORY.md/USER.md are generic scaffolds a persona MAY
-# override by shipping a same-named .tftpl in its directory.
+# Persona model: an explicit, REQUIRED persona (var.persona) selects a persona
+# directory under seed/personas/<persona_key>/. It is fully decoupled from the
+# agent name — one client may run several agents of the same persona under
+# different names. There is NO fallback to the agent name: an empty or unknown
+# persona fails `plan` early (see the precondition below). SOUL.md is
+# persona-defined and mandatory. MEMORY.md/USER.md are generic scaffolds a
+# persona MAY override by shipping a same-named .tftpl in its directory.
 #
 # These are write-once: `ignore_changes = [content, ...]` blocks future
 # applies from clobbering what the agent has edited in-workspace. Editing a
@@ -37,11 +39,13 @@ locals {
 
   seed_prefix = "agents/${var.agent_slug}/workspace/memory"
 
-  # Persona resolution: normalize the effective agent name to a directory key
-  # (lowercase; anything outside [a-z0-9_-] becomes '-'). e.g. "Pixel Pal"
-  # → "pixel-pal", "gamer" → "gamer".
+  # Persona resolution: the explicit, required var.persona normalized to a
+  # directory key (lowercase; anything outside [a-z0-9_-] becomes '-'). e.g.
+  # "Life Coach" → "life-coach", "gamer" → "gamer". No agent-name fallback —
+  # an empty var.persona yields "" and trips the precondition below.
+  # agent_name_effective is kept only for the error message's context.
   agent_name_effective = var.agent_name != "" ? var.agent_name : local.slug_safe
-  persona_key          = replace(lower(trimspace(local.agent_name_effective)), "/[^a-z0-9_-]/", "-")
+  persona_key          = replace(lower(trimspace(var.persona)), "/[^a-z0-9_-]/", "-")
   persona_dir          = "${path.module}/seed/personas/${local.persona_key}"
 
   # Personas that actually exist (defined by shipping a SOUL.md.tftpl) — used
@@ -84,7 +88,7 @@ resource "aws_s3_object" "seed_md" {
     # a raw "no file exists" templatefile error.
     precondition {
       condition     = fileexists("${local.persona_dir}/SOUL.md.tftpl")
-      error_message = "Unknown persona '${local.persona_key}' for agent '${local.agent_name_effective}'. Expected ${local.persona_dir}/SOUL.md.tftpl. Available personas: ${join(", ", local.available_personas)}."
+      error_message = "Invalid persona '${local.persona_key}' (var.persona=${jsonencode(var.persona)}) for agent '${local.agent_name_effective}'. A valid persona is required — there is no agent-name fallback. Expected ${local.persona_dir}/SOUL.md.tftpl. Available personas: ${join(", ", local.available_personas)}."
     }
     ignore_changes = [content, content_base64, etag, source_hash, metadata, tags, tags_all]
   }

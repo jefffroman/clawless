@@ -8,6 +8,12 @@ variable "agent_name" {
   default = ""
 }
 
+variable "persona" {
+  description = "Required persona key to seed, fully decoupled from agent_name (one client may run several agents of the same persona under different names). No fallback — an empty or unknown persona fails `tofu plan` via the seed precondition."
+  type        = string
+  default     = ""
+}
+
 variable "client_name" {
   type    = string
   default = ""
